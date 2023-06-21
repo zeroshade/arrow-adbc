@@ -80,6 +80,9 @@ func newRecordReader(ctx context.Context, alloc memory.Allocator, cl *flightsql.
 		}
 	}()
 
+	chs := make([]chan arrow.Record, numEndpoints)
+	chs[0] = ch
+
 	if info.Schema != nil {
 		schema, err = flight.DeserializeSchema(info.Schema, alloc)
 		if err != nil {
@@ -108,10 +111,9 @@ func newRecordReader(ctx context.Context, alloc memory.Allocator, cl *flightsql.
 		})
 
 		endpoints = endpoints[1:]
+		chs = chs[1:]
 	}
 
-	chs := make([]chan arrow.Record, numEndpoints)
-	chs[0] = ch
 	reader := &reader{
 		refCount: 1,
 		chs:      chs,
