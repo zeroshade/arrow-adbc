@@ -35,7 +35,7 @@
 //
 // # Context Support
 //
-// As of ADBC API revision 1.2.0, context-aware interfaces are available:
+// Context-aware interfaces are available:
 // DatabaseContext, ConnectionContext, and StatementContext. These interfaces
 // require context.Context for all methods to enable uniform OpenTelemetry
 // instrumentation, cancellation, and deadline propagation.
@@ -353,6 +353,19 @@ type Driver interface {
 	NewDatabase(opts map[string]string) (Database, error)
 }
 
+// DriverWithContext is an extension interface to allow the creation of a database
+// by providing an existing [context.Context] to initialize OpenTelemetry tracing.
+// It is similar to [database/sql.Driver] taking a map of keys and values as options
+// to initialize a [Connection] to the database. Any common connection
+// state can live in the Driver itself, for example an in-memory database
+// can place ownership of the actual database in this driver.
+//
+// Any connection specific options should be set using SetOptions before
+// calling Open.
+type DriverWithContext interface {
+	NewDatabaseWithContext(ctx context.Context, opts map[string]string) (Database, error)
+}
+
 type Database interface {
 	SetOptions(map[string]string) error
 	Open(ctx context.Context) (Connection, error)
@@ -361,19 +374,17 @@ type Database interface {
 	Close() error
 }
 
-// DatabaseContext is a Database that supports context.Context for all operations.
+// DatabaseWithContext is a Database that supports context.Context for all operations.
 //
 // This interface mirrors Database but requires context.Context for all methods
 // that may perform I/O or long-running operations. This enables uniform
 // OpenTelemetry instrumentation, cancellation, and deadline propagation.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type DatabaseContext interface {
+type DatabaseWithContext interface {
 	// SetOptions sets options for the database.
 	SetOptions(ctx context.Context, opts map[string]string) error
 
 	// Open opens a connection to the database.
-	Open(ctx context.Context) (ConnectionContext, error)
+	Open(ctx context.Context) (ConnectionWithContext, error)
 
 	// Close closes the database and releases associated resources.
 	Close(ctx context.Context) error
@@ -611,14 +622,12 @@ type Connection interface {
 	ReadPartition(ctx context.Context, serializedPartition []byte) (array.RecordReader, error)
 }
 
-// ConnectionContext is a Connection that supports context.Context for all operations.
+// ConnectionWithContext is a Connection that supports context.Context for all operations.
 //
 // This interface mirrors Connection but requires context.Context for all methods
 // that may perform I/O or long-running operations. Methods that already accepted
 // context in Connection maintain their signatures here.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type ConnectionContext interface {
+type ConnectionWithContext interface {
 	// Metadata methods (these already accept context in Connection)
 	GetInfo(ctx context.Context, infoCodes []InfoCode) (array.RecordReader, error)
 	GetObjects(ctx context.Context, depth ObjectDepth, catalog, dbSchema, tableName, columnName *string, tableType []string) (array.RecordReader, error)
@@ -630,7 +639,7 @@ type ConnectionContext interface {
 	Rollback(ctx context.Context) error
 
 	// Methods that now require context
-	NewStatement(ctx context.Context) (StatementContext, error)
+	NewStatement(ctx context.Context) (StatementWithContext, error)
 	Close(ctx context.Context) error
 
 	// Partition method (already accepts context in Connection)
@@ -777,14 +786,12 @@ type Statement interface {
 	ExecutePartitions(context.Context) (*arrow.Schema, Partitions, int64, error)
 }
 
-// StatementContext is a Statement that supports context.Context for all operations.
+// StatementWithContext is a Statement that supports context.Context for all operations.
 //
 // This interface mirrors Statement but requires context.Context for all methods
 // that may perform I/O or long-running operations. Methods that already accepted
 // context in Statement maintain their signatures here.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type StatementContext interface {
+type StatementWithContext interface {
 	// Methods that now require context
 	Close(ctx context.Context) error
 	SetOption(ctx context.Context, key, val string) error
@@ -901,21 +908,17 @@ type GetSetOptions interface {
 	GetOptionDouble(key string) (float64, error)
 }
 
-// PostInitOptionsContext is a PostInitOptions that supports context.Context.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type PostInitOptionsContext interface {
+// PostInitOptionsWithContext is a PostInitOptions that supports context.Context.
+type PostInitOptionsWithContext interface {
 	SetOption(ctx context.Context, key, value string) error
 }
 
-// GetSetOptionsContext is a GetSetOptions that supports context.Context for all operations.
+// GetSetOptionsWithContext is a GetSetOptions that supports context.Context for all operations.
 //
 // GetOption functions should return an error with StatusNotFound for unsupported options.
 // SetOption functions should return an error with StatusNotImplemented for unsupported options.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type GetSetOptionsContext interface {
-	PostInitOptionsContext
+type GetSetOptionsWithContext interface {
+	PostInitOptionsWithContext
 
 	SetOptionBytes(ctx context.Context, key string, value []byte) error
 	SetOptionInt(ctx context.Context, key string, value int64) error
@@ -926,17 +929,13 @@ type GetSetOptionsContext interface {
 	GetOptionDouble(ctx context.Context, key string) (float64, error)
 }
 
-// ConnectionGetStatisticsContext is a ConnectionGetStatistics that supports context.Context.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type ConnectionGetStatisticsContext interface {
+// ConnectionGetStatisticsWithContext is a ConnectionGetStatistics that supports context.Context.
+type ConnectionGetStatisticsWithContext interface {
 	GetStatistics(ctx context.Context, catalog, dbSchema, tableName *string, approximate bool) (array.RecordReader, error)
 	GetStatisticNames(ctx context.Context) (array.RecordReader, error)
 }
 
-// StatementExecuteSchemaContext is a StatementExecuteSchema that supports context.Context.
-//
-// Since ADBC API revision 1.2.0 (Experimental).
-type StatementExecuteSchemaContext interface {
+// StatementExecuteSchemaWithContext is a StatementExecuteSchema that supports context.Context.
+type StatementExecuteSchemaWithContext interface {
 	ExecuteSchema(ctx context.Context) (*arrow.Schema, error)
 }

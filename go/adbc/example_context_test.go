@@ -50,7 +50,7 @@ func ExampleAsDatabaseContext() {
 
 // ExampleConnectionContext demonstrates using context for cancellation.
 func ExampleConnectionContext() {
-	var connCtx adbc.ConnectionContext // obtained from DatabaseContext.Open
+	var connCtx adbc.ConnectionWithContext // obtained from DatabaseContext.Open
 
 	// Create a context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())

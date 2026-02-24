@@ -35,7 +35,7 @@ type databaseContextAdapter struct {
 // already accept context (like Open), but is effectively ignored for
 // methods that don't (like Close, SetOptions) since the underlying
 // implementation cannot respond to cancellation or deadlines.
-func AsDatabaseContext(db Database) DatabaseContext {
+func AsDatabaseContext(db Database) DatabaseWithContext {
 	if db == nil {
 		return nil
 	}
@@ -47,7 +47,7 @@ func (d *databaseContextAdapter) SetOptions(ctx context.Context, opts map[string
 	return d.db.SetOptions(opts)
 }
 
-func (d *databaseContextAdapter) Open(ctx context.Context) (ConnectionContext, error) {
+func (d *databaseContextAdapter) Open(ctx context.Context) (ConnectionWithContext, error) {
 	// Pass context through since Open already accepts it
 	conn, err := d.db.Open(ctx)
 	if err != nil {
@@ -71,7 +71,7 @@ type connectionContextAdapter struct {
 // This adapter allows using a non-context Connection implementation with
 // context-aware code. The context parameter is passed through for methods
 // that already accept context, but is ignored for methods that don't.
-func AsConnectionContext(conn Connection) ConnectionContext {
+func AsConnectionContext(conn Connection) ConnectionWithContext {
 	if conn == nil {
 		return nil
 	}
@@ -105,7 +105,7 @@ func (c *connectionContextAdapter) Rollback(ctx context.Context) error {
 	return c.conn.Rollback(ctx)
 }
 
-func (c *connectionContextAdapter) NewStatement(ctx context.Context) (StatementContext, error) {
+func (c *connectionContextAdapter) NewStatement(ctx context.Context) (StatementWithContext, error) {
 	// Context cannot be propagated to NewStatement since it doesn't accept context
 	stmt, err := c.conn.NewStatement()
 	if err != nil {
@@ -133,7 +133,7 @@ type statementContextAdapter struct {
 // This adapter allows using a non-context Statement implementation with
 // context-aware code. The context parameter is passed through for methods
 // that already accept context, but is ignored for methods that don't.
-func AsStatementContext(stmt Statement) StatementContext {
+func AsStatementContext(stmt Statement) StatementWithContext {
 	if stmt == nil {
 		return nil
 	}

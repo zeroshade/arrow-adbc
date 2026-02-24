@@ -45,21 +45,6 @@ type OTelTracingInit interface {
 	InitTracing(ctx context.Context, driverName string, driverVersion string) error
 }
 
-// DriverWithContext is an extension interface to allow the creation of a database
-// by providing an existing [context.Context] to initialize OpenTelemetry tracing.
-// It is similar to [database/sql.Driver] taking a map of keys and values as options
-// to initialize a [Connection] to the database. Any common connection
-// state can live in the Driver itself, for example an in-memory database
-// can place ownership of the actual database in this driver.
-//
-// Any connection specific options should be set using SetOptions before
-// calling Open.
-//
-// EXPERIMENTAL. Not formally part of the ADBC APIs.
-type DriverWithContext interface {
-	NewDatabaseWithContext(ctx context.Context, opts map[string]string) (Database, error)
-}
-
 // OTelTracing is an interface that supports instrumentation of [OpenTelementry tracing].
 //
 // EXPERIMENTAL. Not formally part of the ADBC APIs.
@@ -172,7 +157,7 @@ func IngestStream(ctx context.Context, cnxn Connection, reader array.RecordReade
 // This is not part of the ADBC API specification.
 //
 // Since ADBC API revision 1.2.0 (Experimental).
-func IngestStreamContext(ctx context.Context, cnxn ConnectionContext, reader array.RecordReader, targetTable, ingestMode string, opt IngestStreamOptions) (int64, error) {
+func IngestStreamContext(ctx context.Context, cnxn ConnectionWithContext, reader array.RecordReader, targetTable, ingestMode string, opt IngestStreamOptions) (int64, error) {
 	// Create a new statement
 	stmt, err := cnxn.NewStatement(ctx)
 	if err != nil {
