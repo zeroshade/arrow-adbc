@@ -49,7 +49,7 @@ func ExampleAsDatabaseContext() {
 }
 
 // ExampleConnectionContext demonstrates using context for cancellation.
-func ExampleConnectionContext() {
+func ExampleConnectionWithContext() {
 	var connCtx adbc.ConnectionWithContext // obtained from DatabaseContext.Open
 
 	// Create a context with cancellation
