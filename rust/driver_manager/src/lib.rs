@@ -100,7 +100,7 @@
 // an immutable struct of function pointers. Wrapping the driver in a `Mutex`
 // would prevent any parallelism between driver calls, which is not desirable.
 
-pub mod connection_profiles;
+pub mod profile;
 pub mod error;
 pub(crate) mod search;
 
@@ -128,8 +128,8 @@ use adbc_core::{
 };
 use adbc_ffi::driver_method;
 
-use self::search::{parse_driver_uri, DriverLibrary, SearchResult};
-use crate::connection_profiles::{
+use self::search::{parse_driver_uri, DriverLibrary, DriverLocator};
+use crate::profile::{
     process_profile_value, ConnectionProfile, ConnectionProfileProvider, FilesystemProfileProvider,
 };
 
@@ -557,7 +557,7 @@ impl ManagedDatabase {
         let mut drv: ManagedDriver;
         let result = parse_driver_uri(uri)?;
         match result {
-            SearchResult::DriverUri(driver, final_uri) => {
+            DriverLocator::Uri(driver, final_uri) => {
                 drv = ManagedDriver::load_from_name(
                     driver,
                     entrypoint,
@@ -571,7 +571,7 @@ impl ManagedDatabase {
                     OptionValue::String(final_uri.to_string()),
                 ))))
             }
-            SearchResult::Profile(profile) => {
+            DriverLocator::Profile(profile) => {
                 let profile =
                     profile_provider.get_profile(profile, additional_search_paths.clone())?;
                 let (driver_name, init_func) = profile.get_driver_name()?;
@@ -591,10 +591,10 @@ impl ManagedDatabase {
                 let profile_opts: Vec<(OptionDatabase, OptionValue)> = profile
                     .get_options()?
                     .into_iter()
-                    .map(|(k, v)| {
+                    .map(|(k, v)| -> Result<(OptionDatabase, OptionValue)> {
                         if let OptionValue::String(s) = v {
                             let result = process_profile_value(&s)?;
-                            Ok::<(OptionDatabase, OptionValue), Error>((k, result))
+                            Ok((k, result))
                         } else {
                             Ok((k, v))
                         }

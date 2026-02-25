@@ -844,28 +844,18 @@ fn get_search_paths(lvls: LoadFlags) -> Vec<PathBuf> {
 ///
 /// Returns `Status::NotFound` if the profile cannot be located in any search path.
 pub(crate) fn find_filesystem_profile(
-    name: impl AsRef<str>,
+    name: &str,
     additional_path_list: Option<Vec<PathBuf>>,
 ) -> Result<PathBuf> {
     // Convert the name to a PathBuf to ensure proper platform-specific path handling.
     // This normalizes forward slashes to backslashes on Windows.
-    let profile_path = PathBuf::from_slash(name.as_ref());
-    let profile_path = profile_path.as_path();
+    let profile_path = PathBuf::from_slash(name);
+    let has_toml_ext = profile_path.extension().is_some_and(|ext| ext == "toml");
 
     // Handle absolute paths
     if profile_path.is_absolute() {
-        let has_toml_ext = profile_path.extension().is_some_and(|ext| ext == "toml");
-
-        if has_toml_ext {
-            // Has .toml extension - verify it exists
-            return if profile_path.is_file() {
-                Ok(profile_path.to_path_buf())
-            } else {
-                Err(Error::with_message_and_status(
-                    format!("Profile not found: {}", profile_path.display()),
-                    Status::NotFound,
-                ))
-            };
+        if has_toml_ext {            
+            return Ok(profile_path)
         }
 
         // No .toml extension - add it
@@ -884,26 +874,26 @@ pub(crate) fn find_filesystem_profile(
     path_list
         .iter()
         .find_map(|path| {
+            let mut full_path = path.join(profile_path.as_path());
             if has_toml_ext {
                 // Name already has .toml extension, use it as-is
-                let full_path = path.join(profile_path);
                 if full_path.is_file() {
-                    return Some(full_path);
+                    Some(full_path)
+                } else {
+                    None
+                }
+            } else {
+                // try adding .toml extension
+                full_path.set_extension("toml");
+                if full_path.is_file() {
+                    Some(full_path)
+                } else {
+                    None
                 }
             }
-            // Try adding .toml extension
-            let mut full_path = path.join(profile_path);
-            full_path.set_extension("toml");
-            if full_path.is_file() {
-                return Some(full_path);
-            }
-            None
         })
         .ok_or_else(|| {
-            Error::with_message_and_status(
-                format!("Profile not found: {}", name.as_ref()),
-                Status::NotFound,
-            )
+            Error::with_message_and_status(format!("Profile not found: {}", name), Status::NotFound)
         })
 }
 
@@ -963,11 +953,11 @@ fn get_profile_search_paths(additional_path_list: Option<Vec<PathBuf>>) -> Vec<P
 ///
 /// URIs can specify either a direct driver connection or a profile to load.
 #[derive(Debug)]
-pub(crate) enum SearchResult<'a> {
+pub(crate) enum DriverLocator<'a> {
     /// Direct driver URI: (driver_name, connection_string)
     ///
-    /// Example: `"sqlite:file::memory:"` → `DriverUri("sqlite", "file::memory:")`
-    DriverUri(&'a str, &'a str),
+    /// Example: `"sqlite:file::memory:"` → `Uri("sqlite", "file::memory:")`
+    Uri(&'a str, &'a str),
 
     /// Profile reference: (profile_name_or_path)
     ///
@@ -1001,7 +991,7 @@ pub(crate) enum SearchResult<'a> {
 /// Returns `Status::InvalidArguments` if:
 /// - The URI has no colon separator
 /// - The URI format is invalid
-pub(crate) fn parse_driver_uri<'a>(uri: &'a str) -> Result<SearchResult<'a>> {
+pub(crate) fn parse_driver_uri<'a>(uri: &'a str) -> Result<DriverLocator<'a>> {
     let idx = uri.find(":").ok_or(Error::with_message_and_status(
         format!("Invalid URI: {uri}"),
         Status::InvalidArguments,
@@ -1009,12 +999,12 @@ pub(crate) fn parse_driver_uri<'a>(uri: &'a str) -> Result<SearchResult<'a>> {
 
     let driver = &uri[..idx];
     if uri.len() <= idx + 2 {
-        return Ok(SearchResult::DriverUri(driver, uri));
+        return Ok(DriverLocator::Uri(driver, uri));
     }
 
     #[cfg(target_os = "windows")]
     if let Ok(true) = std::fs::exists(uri) {
-        return Ok(SearchResult::DriverUri(uri, ""));
+        return Ok(DriverLocator::Uri(uri, ""));
     }
 
     if &uri[idx..idx + 2] == ":/" {
@@ -1023,15 +1013,15 @@ pub(crate) fn parse_driver_uri<'a>(uri: &'a str) -> Result<SearchResult<'a>> {
             // Check if it's "://" (two slashes) or just ":/" (one slash)
             if uri.len() > idx + 3 && &uri[idx + 2..idx + 3] == "/" {
                 // It's "profile://..." - skip "://" (three characters)
-                return Ok(SearchResult::Profile(&uri[idx + 3..]));
+                return Ok(DriverLocator::Profile(&uri[idx + 3..]));
             }
             // It's "profile:/..." - skip ":/" (two characters)
-            return Ok(SearchResult::Profile(&uri[idx + 2..]));
+            return Ok(DriverLocator::Profile(&uri[idx + 2..]));
         }
-        return Ok(SearchResult::DriverUri(driver, uri));
+        return Ok(DriverLocator::Uri(driver, uri));
     }
 
-    Ok(SearchResult::DriverUri(driver, &uri[idx + 1..]))
+    Ok(DriverLocator::Uri(driver, &uri[idx + 1..]))
 }
 
 #[cfg(test)]
@@ -1574,36 +1564,33 @@ mod tests {
     fn test_parse_driver_uri() {
         let cases = vec![
             ("sqlite", Err(Status::InvalidArguments)),
-            ("sqlite:", Ok(SearchResult::DriverUri("sqlite", "sqlite:"))),
+            ("sqlite:", Ok(DriverLocator::Uri("sqlite", "sqlite:"))),
             (
                 "sqlite:file::memory:",
-                Ok(SearchResult::DriverUri("sqlite", "file::memory:")),
+                Ok(DriverLocator::Uri("sqlite", "file::memory:")),
             ),
             (
                 "sqlite:file::memory:?cache=shared",
-                Ok(SearchResult::DriverUri(
-                    "sqlite",
-                    "file::memory:?cache=shared",
-                )),
+                Ok(DriverLocator::Uri("sqlite", "file::memory:?cache=shared")),
             ),
             (
                 "postgresql://a:b@localhost:9999/nonexistent",
-                Ok(SearchResult::DriverUri(
+                Ok(DriverLocator::Uri(
                     "postgresql",
                     "postgresql://a:b@localhost:9999/nonexistent",
                 )),
             ),
             (
                 "profile://my_profile",
-                Ok(SearchResult::Profile("my_profile")),
+                Ok(DriverLocator::Profile("my_profile")),
             ),
             (
                 "profile://path/to/profile.toml",
-                Ok(SearchResult::Profile("path/to/profile.toml")),
+                Ok(DriverLocator::Profile("path/to/profile.toml")),
             ),
             (
                 "profile:///absolute/path/to/profile.toml",
-                Ok(SearchResult::Profile("/absolute/path/to/profile.toml")),
+                Ok(DriverLocator::Profile("/absolute/path/to/profile.toml")),
             ),
             ("invalid_uri", Err(Status::InvalidArguments)),
         ];
@@ -1611,8 +1598,8 @@ mod tests {
         for (input, expected) in cases {
             let result = parse_driver_uri(input);
             match expected {
-                Ok(SearchResult::DriverUri(exp_driver, exp_conn)) => {
-                    let SearchResult::DriverUri(driver, conn) = result.expect("Expected Ok result")
+                Ok(DriverLocator::Uri(exp_driver, exp_conn)) => {
+                    let DriverLocator::Uri(driver, conn) = result.expect("Expected Ok result")
                     else {
                         panic!("Expected DriverUri result");
                     };
@@ -1620,8 +1607,9 @@ mod tests {
                     assert_eq!(driver, exp_driver);
                     assert_eq!(conn, exp_conn);
                 }
-                Ok(SearchResult::Profile(exp_profile)) => {
-                    let SearchResult::Profile(profile) = result.expect("Expected Ok result") else {
+                Ok(DriverLocator::Profile(exp_profile)) => {
+                    let DriverLocator::Profile(profile) = result.expect("Expected Ok result")
+                    else {
                         panic!("Expected Profile result");
                     };
 
@@ -1674,7 +1662,7 @@ mod tests {
         }
         std::fs::write(&temp_db_path, b"").expect("Failed to create temporary database file");
 
-        let SearchResult::DriverUri(driver, conn) =
+        let DriverLocator::Uri(driver, conn) =
             parse_driver_uri(temp_db_path.to_str().unwrap()).unwrap()
         else {
             panic!("Expected DriverUri result");

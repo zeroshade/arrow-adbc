@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
 use adbc_core::{error::Status, LOAD_FLAG_DEFAULT};
-use adbc_driver_manager::connection_profiles::{
+use adbc_driver_manager::profile::{
     ConnectionProfile, ConnectionProfileProvider, FilesystemProfileProvider,
 };
 use adbc_driver_manager::ManagedDatabase;
