@@ -553,7 +553,7 @@ impl ManagedDatabase {
         additional_search_paths: Option<Vec<PathBuf>>,
         profile_provider: impl ConnectionProfileProvider,
         opts: impl IntoIterator<Item = (<Self as Optionable>::Option, OptionValue)>,
-    ) -> Result<Self> {        
+    ) -> Result<Self> {
         let result = parse_driver_uri(uri)?;
         let (mut drv, default_opts) = match result {
             DriverLocator::Uri(driver, final_uri) => {

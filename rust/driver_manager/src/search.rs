@@ -854,8 +854,8 @@ pub(crate) fn find_filesystem_profile(
 
     // Handle absolute paths
     if profile_path.is_absolute() {
-        if has_toml_ext {            
-            return Ok(profile_path)
+        if has_toml_ext {
+            return Ok(profile_path);
         }
 
         // No .toml extension - add it
