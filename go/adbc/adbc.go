@@ -36,7 +36,7 @@
 // # Context Support
 //
 // Context-aware interfaces are available:
-// DatabaseContext, ConnectionContext, and StatementContext. These interfaces
+// DatabaseWithContext, ConnectionWithContext, and StatementWithContext. These interfaces
 // require context.Context for all methods to enable uniform OpenTelemetry
 // instrumentation, cancellation, and deadline propagation.
 //
@@ -908,18 +908,12 @@ type GetSetOptions interface {
 	GetOptionDouble(key string) (float64, error)
 }
 
-// PostInitOptionsWithContext is a PostInitOptions that supports context.Context.
-type PostInitOptionsWithContext interface {
-	SetOption(ctx context.Context, key, value string) error
-}
-
 // GetSetOptionsWithContext is a GetSetOptions that supports context.Context for all operations.
 //
 // GetOption functions should return an error with StatusNotFound for unsupported options.
 // SetOption functions should return an error with StatusNotImplemented for unsupported options.
 type GetSetOptionsWithContext interface {
-	PostInitOptionsWithContext
-
+	SetOption(ctx context.Context, key, value string) error
 	SetOptionBytes(ctx context.Context, key string, value []byte) error
 	SetOptionInt(ctx context.Context, key string, value int64) error
 	SetOptionDouble(ctx context.Context, key string, value float64) error
