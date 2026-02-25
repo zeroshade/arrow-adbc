@@ -100,8 +100,8 @@
 // an immutable struct of function pointers. Wrapping the driver in a `Mutex`
 // would prevent any parallelism between driver calls, which is not desirable.
 
-pub mod profile;
 pub mod error;
+pub mod profile;
 pub(crate) mod search;
 
 use std::collections::HashSet;
@@ -528,7 +528,7 @@ impl ManagedDatabase {
     /// ```no_run
     /// use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
     /// use adbc_driver_manager::ManagedDatabase;
-    /// use adbc_driver_manager::connection_profiles::FilesystemProfileProvider;
+    /// use adbc_driver_manager::profile::FilesystemProfileProvider;
     /// use adbc_core::LOAD_FLAG_DEFAULT;
     ///
     /// let provider = FilesystemProfileProvider;
@@ -553,29 +553,30 @@ impl ManagedDatabase {
         additional_search_paths: Option<Vec<PathBuf>>,
         profile_provider: impl ConnectionProfileProvider,
         opts: impl IntoIterator<Item = (<Self as Optionable>::Option, OptionValue)>,
-    ) -> Result<Self> {
-        let mut drv: ManagedDriver;
+    ) -> Result<Self> {        
         let result = parse_driver_uri(uri)?;
-        match result {
+        let (mut drv, default_opts) = match result {
             DriverLocator::Uri(driver, final_uri) => {
-                drv = ManagedDriver::load_from_name(
+                let drv = ManagedDriver::load_from_name(
                     driver,
                     entrypoint,
                     version,
                     load_flags,
-                    additional_search_paths.clone(),
+                    additional_search_paths,
                 )?;
 
-                drv.new_database_with_opts(opts.into_iter().chain(std::iter::once((
+                let final_opts = vec![(
                     OptionDatabase::Uri,
                     OptionValue::String(final_uri.to_string()),
-                ))))
+                )];
+                (drv, final_opts)
             }
             DriverLocator::Profile(profile) => {
                 let profile =
                     profile_provider.get_profile(profile, additional_search_paths.clone())?;
                 let (driver_name, init_func) = profile.get_driver_name()?;
 
+                let drv: ManagedDriver;
                 if let Some(init_fn) = init_func {
                     drv = ManagedDriver::load_static(init_fn, version)?;
                 } else {
@@ -600,9 +601,11 @@ impl ManagedDatabase {
                         }
                     })
                     .collect::<Result<Vec<_>>>()?;
-                drv.new_database_with_opts(profile_opts.into_iter().chain(opts))
+                (drv, profile_opts)
             }
-        }
+        };
+
+        drv.new_database_with_opts(default_opts.into_iter().chain(opts))
     }
 
     fn ffi_driver(&self) -> &adbc_ffi::FFI_AdbcDriver {

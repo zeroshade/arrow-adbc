@@ -113,7 +113,7 @@ pub trait ConnectionProfileProvider {
 /// # Example
 ///
 /// ```no_run
-/// use adbc_driver_manager::connection_profiles::{
+/// use adbc_driver_manager::profile::{
 ///     ConnectionProfileProvider, FilesystemProfileProvider
 /// };
 ///
