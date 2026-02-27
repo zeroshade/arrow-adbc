@@ -38,6 +38,7 @@
 #include <cctype>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "adbc_driver_manager_internal.h"

@@ -37,19 +37,6 @@ typedef AdbcStatusCode (*AdbcConnectionProfileProvider)(
     const char* profile_name, const char* additional_search_path_list,
     struct AdbcConnectionProfile* out, struct AdbcError* error);
 
-namespace {
-
-// Platform-specific type aliases
-#ifdef _WIN32
-using char_type = wchar_t;
-using string_type = std::wstring;
-#else
-using char_type = char;
-using string_type = std::string;
-#endif
-
-}  // namespace
-
 // Enums
 enum class SearchPathSource {
   kEnv,
@@ -142,11 +129,8 @@ AdbcStatusCode LoadDriverFromRegistry(HKEY root, const std::wstring& driver_name
 #endif
 
 // Profile loading
-struct FilesystemProfile;
 AdbcStatusCode ProcessProfileValue(std::string_view value, std::string& out,
                                    struct AdbcError* error);
-AdbcStatusCode LoadProfileFile(const std::filesystem::path& profile_path,
-                               FilesystemProfile& profile, struct AdbcError* error);
 
 // Initialization
 /// Temporary state while the database is being configured.
