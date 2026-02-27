@@ -23,6 +23,7 @@ use adbc_driver_manager::profile::{
     ConnectionProfile, ConnectionProfileProvider, FilesystemProfileProvider,
 };
 use adbc_driver_manager::ManagedDatabase;
+use serial_test::serial;
 
 mod common;
 
@@ -432,6 +433,7 @@ fn test_profile_display() {
 }
 
 #[test]
+#[serial]
 fn test_profile_hierarchical_path_via_env_var() {
     use std::env;
 
@@ -448,8 +450,7 @@ fn test_profile_hierarchical_path_via_env_var() {
     // Create a profile in the nested directory
     let profile_path = postgres_dir.join("production.toml");
     std::fs::write(&profile_path, simple_profile()).expect("Failed to write profile");
-    println!("Creating profile at {}", profile_path.display());
-    
+
     // Verify the file was created
     assert!(
         profile_path.is_file(),
@@ -497,6 +498,7 @@ fn test_profile_hierarchical_path_via_env_var() {
 }
 
 #[test]
+#[serial]
 fn test_profile_hierarchical_path_with_extension_via_env_var() {
     use std::env;
 
@@ -512,7 +514,6 @@ fn test_profile_hierarchical_path_with_extension_via_env_var() {
 
     // Create a profile in the nested directory
     let profile_path = dev_dir.join("database.toml");
-    println!("Creating profile at {}", profile_path.display());
     std::fs::write(&profile_path, simple_profile()).expect("Failed to write profile");
 
     // Set ADBC_PROFILE_PATH to the parent directory
