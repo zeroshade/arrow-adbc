@@ -1144,7 +1144,7 @@ struct ManagerDriverState {
 };
 
 /// Unload the driver DLL.
-static AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error) {
+AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error) {
   AdbcStatusCode status = ADBC_STATUS_OK;
 
   if (!driver->private_manager) return status;

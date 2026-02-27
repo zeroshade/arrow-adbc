@@ -94,6 +94,12 @@ struct OwnedError {
   ~OwnedError();
 };
 
+inline OwnedError::~OwnedError() {
+  if (error.release) {
+    error.release(&error);
+  }
+}
+
 // Error handling
 void ReleaseError(struct AdbcError* error);
 void SetError(struct AdbcError* error, const std::string& message);
@@ -170,5 +176,12 @@ struct TempConnection {
 AdbcStatusCode InternalInitializeProfile(TempDatabase* args,
                                         const std::string_view profile,
                                         struct AdbcError* error);
+
+// Driver management
+AdbcStatusCode AdbcFindLoadDriver(const char* driver_name, const char* entrypoint,
+                                  const int version, const AdbcLoadFlags load_options,
+                                  const char* additional_search_path_list,
+                                  void* raw_driver, struct AdbcError* error);
+AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error);
 
 #endif  // ADBC_DRIVER_MANAGER_INTERNAL_H

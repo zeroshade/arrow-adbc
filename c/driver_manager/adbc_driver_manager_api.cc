@@ -28,17 +28,6 @@
 #include "arrow-adbc/adbc_driver_manager.h"
 #include "adbc_driver_manager_internal.h"
 
-// Forward declarations from driver loading implementation
-// ManagerDriverState is defined in driver loading file
-struct ManagerDriverState;
-
-// Forward declaration for driver loading functions (implemented in driver loading file)
-extern AdbcStatusCode AdbcFindLoadDriver(const char* driver_name, const char* entrypoint,
-                                         const int version, const AdbcLoadFlags load_options,
-                                         const char* additional_search_path_list,
-                                         void* raw_driver, struct AdbcError* error);
-extern AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error);
-
 // =============================================================================
 // Default stub implementations for error handling (declared here for use below)
 // =============================================================================
