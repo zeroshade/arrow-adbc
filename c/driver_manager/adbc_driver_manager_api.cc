@@ -409,34 +409,6 @@ AdbcStatusCode StatementSetSubstraitPlan(struct AdbcStatement*, const uint8_t*, 
 }  // namespace
 
 // =============================================================================
-// Helper macros
-// =============================================================================
-
-#define INIT_ERROR(ERROR, SOURCE)                               \
-  if (ERROR) {                                                  \
-    if (SOURCE->private_driver->ErrorGetDetail) {               \
-      ERROR->vendor_code = ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA; \
-      ERROR->private_driver = SOURCE->private_driver;           \
-    } else {                                                    \
-      ERROR->vendor_code = 0;                                   \
-    }                                                           \
-    ERROR->private_data = nullptr;                              \
-    ERROR->sqlstate[0] = '\0';                                  \
-    ERROR->sqlstate[1] = '\0';                                  \
-    ERROR->sqlstate[2] = '\0';                                  \
-    ERROR->sqlstate[3] = '\0';                                  \
-    ERROR->sqlstate[4] = '\0';                                  \
-  }
-
-#define WRAP_STREAM(EXPR, OUT, SOURCE)                 \
-  if ((EXPR) != ADBC_STATUS_OK) {                      \
-    return EXPR;                                       \
-  }                                                    \
-  AdbcStatusCode status_code = EXPR;                   \
-  ErrorArrayStreamInit(OUT, (SOURCE)->private_driver); \
-  return status_code;
-
-// =============================================================================
 // Database API
 // =============================================================================
 

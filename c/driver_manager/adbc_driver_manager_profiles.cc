@@ -157,33 +157,6 @@ static AdbcStatusCode ProcessProfileValueInternal(std::string_view value,
   return ADBC_STATUS_OK;
 }
 
-SearchPaths GetEnvPaths(const char_type* env_var) {
-#ifdef _WIN32
-  DWORD required_size = GetEnvironmentVariableW(env_var, NULL, 0);
-  if (required_size == 0) {
-    return {};
-  }
-
-  std::wstring path_var;
-  path_var.resize(required_size);
-  DWORD actual_size = GetEnvironmentVariableW(env_var, path_var.data(), required_size);
-  // Remove null terminator
-  path_var.resize(actual_size);
-  auto path = Utf8Encode(path_var);
-#else
-  const char* path_var = std::getenv(env_var);
-  if (!path_var) {
-    return {};
-  }
-  std::string path(path_var);
-#endif  // _WIN32
-  SearchPaths paths;
-  for (auto parsed_path : InternalAdbcParsePath(path)) {
-    paths.emplace_back(SearchPathSource::kEnv, parsed_path);
-  }
-  return paths;
-}
-
 }  // namespace
 
 // FilesystemProfile needs external linkage for use in internal header

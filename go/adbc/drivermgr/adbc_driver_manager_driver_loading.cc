@@ -282,12 +282,6 @@ SearchPaths GetEnvPaths(const char_type* env_var) {
   return paths;
 }
 
-#ifdef _WIN32
-static const wchar_t* kAdbcDriverPath = L"ADBC_DRIVER_PATH";
-#else
-static const char* kAdbcDriverPath = "ADBC_DRIVER_PATH";
-#endif  // _WIN32
-
 SearchPaths GetSearchPaths(const AdbcLoadFlags levels) {
   SearchPaths paths;
   if (levels & ADBC_LOAD_FLAG_SEARCH_ENV) {
@@ -333,478 +327,452 @@ bool HasExtension(const std::filesystem::path& path, const std::string& ext) {
 #endif  // _WIN32
 }
 
-/// A driver DLL.
-struct ManagedLibrary {
-  ManagedLibrary() : handle(nullptr) {}
-  ManagedLibrary(ManagedLibrary&& other) : handle(other.handle) {
-    other.handle = nullptr;
-  }
-  ManagedLibrary(const ManagedLibrary&) = delete;
-  ManagedLibrary& operator=(const ManagedLibrary&) = delete;
-  ManagedLibrary& operator=(ManagedLibrary&& other) noexcept {
-    this->handle = other.handle;
-    other.handle = nullptr;
-    return *this;
-  }
+void ManagedLibrary::Release() {
+  // TODO(apache/arrow-adbc#204): causes tests to segfault.  Need to
+  // refcount the driver DLL; also, errors may retain a reference to
+  // release() from the DLL - how to handle this?  It's unlikely we can
+  // actually do this - in general shared libraries are not safe to unload.
+}
 
-  ~ManagedLibrary() { Release(); }
-
-  void Release() {
-    // TODO(apache/arrow-adbc#204): causes tests to segfault.  Need to
-    // refcount the driver DLL; also, errors may retain a reference to
-    // release() from the DLL - how to handle this?  It's unlikely we can
-    // actually do this - in general shared libraries are not safe to unload.
+/// \brief Resolve the driver name to a concrete location.
+AdbcStatusCode ManagedLibrary::GetDriverInfo(
+    const std::string_view driver_name, const AdbcLoadFlags load_options,
+    const std::vector<std::filesystem::path>& additional_search_paths, DriverInfo& info,
+    struct AdbcError* error) {
+  if (driver_name.empty()) {
+    SetError(error, "Driver name is empty");
+    return ADBC_STATUS_INVALID_ARGUMENT;
   }
 
-  /// \brief Resolve the driver name to a concrete location.
-  AdbcStatusCode GetDriverInfo(
-      const std::string_view driver_name, const AdbcLoadFlags load_options,
-      const std::vector<std::filesystem::path>& additional_search_paths, DriverInfo& info,
-      struct AdbcError* error) {
-    if (driver_name.empty()) {
-      SetError(error, "Driver name is empty");
+  // First try to treat the given driver name as a path to a manifest or shared library
+  std::filesystem::path driver_path(driver_name);
+  const bool allow_relative_paths = load_options & ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS;
+  if (driver_path.has_extension()) {
+    if (driver_path.is_relative() && !allow_relative_paths) {
+      SetError(error, "Driver path is relative and relative paths are not allowed");
       return ADBC_STATUS_INVALID_ARGUMENT;
     }
 
-    // First try to treat the given driver name as a path to a manifest or shared library
-    std::filesystem::path driver_path(driver_name);
-    const bool allow_relative_paths = load_options & ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS;
-    if (driver_path.has_extension()) {
-      if (driver_path.is_relative() && !allow_relative_paths) {
-        SetError(error, "Driver path is relative and relative paths are not allowed");
-        return ADBC_STATUS_INVALID_ARGUMENT;
+    if (HasExtension(driver_path, ".toml")) {
+      // if the extension is .toml, attempt to load the manifest
+      // erroring if we fail
+
+      auto status = LoadDriverManifest(driver_path, info, error);
+      if (status == ADBC_STATUS_OK) {
+        return Load(info.lib_path.native(), {}, error);
       }
-
-      if (HasExtension(driver_path, ".toml")) {
-        // if the extension is .toml, attempt to load the manifest
-        // erroring if we fail
-
-        auto status = LoadDriverManifest(driver_path, info, error);
-        if (status == ADBC_STATUS_OK) {
-          return Load(info.lib_path.native(), {}, error);
-        }
-        return status;
-      }
-
-      // if the extension is not .toml, then just try to load the provided
-      // path as if it was an absolute path to a driver library
-      info.lib_path = driver_path;
-      return Load(driver_path.native(), {}, error);
+      return status;
     }
 
-    if (driver_path.is_absolute()) {
-      // if we have an absolute path without an extension, first see if there's a
-      // toml file with the same name.
-      driver_path.replace_extension(".toml");
-      if (std::filesystem::exists(driver_path)) {
-        auto status = LoadDriverManifest(driver_path, info, error);
-        if (status == ADBC_STATUS_OK) {
-          return Load(info.lib_path.native(), {}, error);
-        }
-      }
+    // if the extension is not .toml, then just try to load the provided
+    // path as if it was an absolute path to a driver library
+    info.lib_path = driver_path;
+    return Load(driver_path.native(), {}, error);
+  }
 
-      driver_path.replace_extension("");
-      // otherwise just try to load the provided path as if it was an absolute path
-      info.lib_path = driver_path;
-      return Load(driver_path.native(), {}, error);
+  if (driver_path.is_absolute()) {
+    // if we have an absolute path without an extension, first see if there's a
+    // toml file with the same name.
+    driver_path.replace_extension(".toml");
+    if (std::filesystem::exists(driver_path)) {
+      auto status = LoadDriverManifest(driver_path, info, error);
+      if (status == ADBC_STATUS_OK) {
+        return Load(info.lib_path.native(), {}, error);
+      }
     }
 
-    if (driver_path.has_extension()) {
-      if (driver_path.is_relative() && !allow_relative_paths) {
-        SetError(error, "Driver path is relative and relative paths are not allowed");
-        return ADBC_STATUS_INVALID_ARGUMENT;
-      }
+    driver_path.replace_extension("");
+    // otherwise just try to load the provided path as if it was an absolute path
+    info.lib_path = driver_path;
+    return Load(driver_path.native(), {}, error);
+  }
+
+  if (driver_path.has_extension()) {
+    if (driver_path.is_relative() && !allow_relative_paths) {
+      SetError(error, "Driver path is relative and relative paths are not allowed");
+      return ADBC_STATUS_INVALID_ARGUMENT;
+    }
 
 #if defined(_WIN32)
-      static const std::string kPlatformLibrarySuffix = ".dll";
+    static const std::string kPlatformLibrarySuffix = ".dll";
 #elif defined(__APPLE__)
-      static const std::string kPlatformLibrarySuffix = ".dylib";
+    static const std::string kPlatformLibrarySuffix = ".dylib";
 #else
-      static const std::string kPlatformLibrarySuffix = ".so";
+    static const std::string kPlatformLibrarySuffix = ".so";
 #endif  // defined(_WIN32)
-      if (HasExtension(driver_path, kPlatformLibrarySuffix)) {
-        info.lib_path = driver_path;
-        return Load(driver_path.native(), {}, error);
-      }
-
-      SetError(error, "Driver name has unrecognized extension: " +
-                          driver_path.extension().string());
-      return ADBC_STATUS_INVALID_ARGUMENT;
+    if (HasExtension(driver_path, kPlatformLibrarySuffix)) {
+      info.lib_path = driver_path;
+      return Load(driver_path.native(), {}, error);
     }
 
-    // not an absolute path, no extension. Let's search the configured paths
-    // based on the options
-    // FindDriver will set info.lib_path
-    // XXX(lidavidm): the control flow in this call chain is excessively
-    // convoluted and it's hard to determine if DriverInfo is fully
-    // initialized or not in all non-error paths
-    return FindDriver(driver_path, load_options, additional_search_paths, info, error);
+    SetError(error, "Driver name has unrecognized extension: " +
+                        driver_path.extension().string());
+    return ADBC_STATUS_INVALID_ARGUMENT;
   }
 
-  /// \return ADBC_STATUS_NOT_FOUND if the driver shared library could not be
-  ///   found (via dlopen) or if a manifest was found but did not contain a
-  ///   path for the current platform, ADBC_STATUS_INVALID_ARGUMENT if a
-  ///   manifest was found but could not be parsed, ADBC_STATUS_OK otherwise
-  ///
-  /// May modify search_paths to add error info
-  AdbcStatusCode SearchPathsForDriver(const std::filesystem::path& driver_path,
-                                      SearchPaths& search_paths, DriverInfo& info,
-                                      struct AdbcError* error) {
-    SearchPaths extra_debug_info;
-    for (const auto& [source, search_path] : search_paths) {
-      if (source == SearchPathSource::kRegistry || source == SearchPathSource::kUnset ||
-          source == SearchPathSource::kDoesNotExist ||
-          source == SearchPathSource::kDisabledAtCompileTime ||
-          source == SearchPathSource::kDisabledAtRunTime ||
-          source == SearchPathSource::kOtherError) {
-        continue;
-      }
-      std::filesystem::path full_path = search_path / driver_path;
+  // not an absolute path, no extension. Let's search the configured paths
+  // based on the options
+  // FindDriver will set info.lib_path
+  // XXX(lidavidm): the control flow in this call chain is excessively
+  // convoluted and it's hard to determine if DriverInfo is fully
+  // initialized or not in all non-error paths
+  return FindDriver(driver_path, load_options, additional_search_paths, info, error);
+}
 
-      // check for toml first, then dll
-      full_path.replace_extension(".toml");
-      if (std::filesystem::exists(full_path)) {
-        OwnedError intermediate_error;
+/// \return ADBC_STATUS_NOT_FOUND if the driver shared library could not be
+///   found (via dlopen) or if a manifest was found but did not contain a
+///   path for the current platform, ADBC_STATUS_INVALID_ARGUMENT if a
+///   manifest was found but could not be parsed, ADBC_STATUS_OK otherwise
+///
+/// May modify search_paths to add error info
+AdbcStatusCode ManagedLibrary::SearchPathsForDriver(
+    const std::filesystem::path& driver_path, SearchPaths& search_paths, DriverInfo& info,
+    struct AdbcError* error) {
+  SearchPaths extra_debug_info;
+  for (const auto& [source, search_path] : search_paths) {
+    if (source == SearchPathSource::kRegistry || source == SearchPathSource::kUnset ||
+        source == SearchPathSource::kDoesNotExist ||
+        source == SearchPathSource::kDisabledAtCompileTime ||
+        source == SearchPathSource::kDisabledAtRunTime ||
+        source == SearchPathSource::kOtherError) {
+      continue;
+    }
+    std::filesystem::path full_path = search_path / driver_path;
 
-        auto status = LoadDriverManifest(full_path, info, &intermediate_error.error);
+    // check for toml first, then dll
+    full_path.replace_extension(".toml");
+    if (std::filesystem::exists(full_path)) {
+      OwnedError intermediate_error;
+
+      auto status = LoadDriverManifest(full_path, info, &intermediate_error.error);
+      if (status == ADBC_STATUS_OK) {
+        // Don't pass attempted_paths here; we'll generate the error at a higher level
+        status = Load(info.lib_path.native(), {}, &intermediate_error.error);
         if (status == ADBC_STATUS_OK) {
-          // Don't pass attempted_paths here; we'll generate the error at a higher level
-          status = Load(info.lib_path.native(), {}, &intermediate_error.error);
-          if (status == ADBC_STATUS_OK) {
-            return status;
-          }
-          std::string message = "found ";
-          message += full_path.string();
-          if (intermediate_error.error.message) {
-            message += " but: ";
-            message += intermediate_error.error.message;
-          } else {
-            message += " could not load the driver it specified";
-          }
-          extra_debug_info.emplace_back(SearchPathSource::kOtherError,
-                                        std::move(message));
-          search_paths.insert(search_paths.end(), extra_debug_info.begin(),
-                              extra_debug_info.end());
-          return status;
-        } else if (status == ADBC_STATUS_INVALID_ARGUMENT) {
-          // The manifest was invalid. Don't ignore that!
-          search_paths.insert(search_paths.end(), extra_debug_info.begin(),
-                              extra_debug_info.end());
-          if (intermediate_error.error.message) {
-            std::string error_message = intermediate_error.error.message;
-            AddSearchPathsToError(search_paths, SearchPathType::kManifest, error_message);
-            SetError(error, std::move(error_message));
-          }
           return status;
         }
-        // Should be NOT_FOUND otherwise
         std::string message = "found ";
         message += full_path.string();
         if (intermediate_error.error.message) {
           message += " but: ";
           message += intermediate_error.error.message;
         } else {
-          message += " which did not define a driver for this platform";
+          message += " could not load the driver it specified";
         }
-
         extra_debug_info.emplace_back(SearchPathSource::kOtherError, std::move(message));
-      }
-
-      // remove the .toml extension; Load will add the DLL/SO/DYLIB suffix
-      full_path.replace_extension("");
-      // Don't pass error here - it'll be suppressed anyways
-      auto status = Load(full_path.native(), {}, nullptr);
-      if (status == ADBC_STATUS_OK) {
-        info.lib_path = full_path;
+        search_paths.insert(search_paths.end(), extra_debug_info.begin(),
+                            extra_debug_info.end());
+        return status;
+      } else if (status == ADBC_STATUS_INVALID_ARGUMENT) {
+        // The manifest was invalid. Don't ignore that!
+        search_paths.insert(search_paths.end(), extra_debug_info.begin(),
+                            extra_debug_info.end());
+        if (intermediate_error.error.message) {
+          std::string error_message = intermediate_error.error.message;
+          AddSearchPathsToError(search_paths, SearchPathType::kManifest, error_message);
+          SetError(error, std::move(error_message));
+        }
         return status;
       }
+      // Should be NOT_FOUND otherwise
+      std::string message = "found ";
+      message += full_path.string();
+      if (intermediate_error.error.message) {
+        message += " but: ";
+        message += intermediate_error.error.message;
+      } else {
+        message += " which did not define a driver for this platform";
+      }
+
+      extra_debug_info.emplace_back(SearchPathSource::kOtherError, std::move(message));
     }
 
-    search_paths.insert(search_paths.end(), extra_debug_info.begin(),
-                        extra_debug_info.end());
-    return ADBC_STATUS_NOT_FOUND;
+    // remove the .toml extension; Load will add the DLL/SO/DYLIB suffix
+    full_path.replace_extension("");
+    // Don't pass error here - it'll be suppressed anyways
+    auto status = Load(full_path.native(), {}, nullptr);
+    if (status == ADBC_STATUS_OK) {
+      info.lib_path = full_path;
+      return status;
+    }
   }
 
-  AdbcStatusCode FindDriver(
-      const std::filesystem::path& driver_path, const AdbcLoadFlags load_options,
-      const std::vector<std::filesystem::path>& additional_search_paths, DriverInfo& info,
-      struct AdbcError* error) {
-    if (driver_path.empty()) {
-      SetError(error, "Driver path is empty");
-      return ADBC_STATUS_INVALID_ARGUMENT;
-    }
+  search_paths.insert(search_paths.end(), extra_debug_info.begin(),
+                      extra_debug_info.end());
+  return ADBC_STATUS_NOT_FOUND;
+}
 
-    SearchPaths search_paths;
-    {
-      // First search the paths in the env var `ADBC_DRIVER_PATH`.
-      // Then search the runtime application-defined additional search paths.
-      search_paths = GetSearchPaths(load_options & ADBC_LOAD_FLAG_SEARCH_ENV);
-      if (!(load_options & ADBC_LOAD_FLAG_SEARCH_ENV)) {
-        search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
-                                  "ADBC_DRIVER_PATH (enable ADBC_LOAD_FLAG_SEARCH_ENV)");
-      } else if (search_paths.empty()) {
-        search_paths.emplace_back(SearchPathSource::kUnset, "ADBC_DRIVER_PATH");
-      }
-      for (const auto& path : additional_search_paths) {
-        search_paths.emplace_back(SearchPathSource::kAdditional, path);
-      }
+AdbcStatusCode ManagedLibrary::FindDriver(
+    const std::filesystem::path& driver_path, const AdbcLoadFlags load_options,
+    const std::vector<std::filesystem::path>& additional_search_paths, DriverInfo& info,
+    struct AdbcError* error) {
+  if (driver_path.empty()) {
+    SetError(error, "Driver path is empty");
+    return ADBC_STATUS_INVALID_ARGUMENT;
+  }
+
+  SearchPaths search_paths;
+  {
+    // First search the paths in the env var `ADBC_DRIVER_PATH`.
+    // Then search the runtime application-defined additional search paths.
+    search_paths = GetSearchPaths(load_options & ADBC_LOAD_FLAG_SEARCH_ENV);
+    if (!(load_options & ADBC_LOAD_FLAG_SEARCH_ENV)) {
+      search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
+                                "ADBC_DRIVER_PATH (enable ADBC_LOAD_FLAG_SEARCH_ENV)");
+    } else if (search_paths.empty()) {
+      search_paths.emplace_back(SearchPathSource::kUnset, "ADBC_DRIVER_PATH");
+    }
+    for (const auto& path : additional_search_paths) {
+      search_paths.emplace_back(SearchPathSource::kAdditional, path);
+    }
 
 #if ADBC_CONDA_BUILD
-      // Then, if this is a conda build, search in the conda environment if
-      // it is activated.
-      if (load_options & ADBC_LOAD_FLAG_SEARCH_ENV) {
+    // Then, if this is a conda build, search in the conda environment if
+    // it is activated.
+    if (load_options & ADBC_LOAD_FLAG_SEARCH_ENV) {
 #ifdef _WIN32
-        const wchar_t* conda_name = L"CONDA_PREFIX";
+      const wchar_t* conda_name = L"CONDA_PREFIX";
 #else
-        const char* conda_name = "CONDA_PREFIX";
+      const char* conda_name = "CONDA_PREFIX";
 #endif  // _WIN32
-        auto venv = GetEnvPaths(conda_name);
-        if (!venv.empty()) {
-          for (const auto& [_, venv_path] : venv) {
-            search_paths.emplace_back(SearchPathSource::kConda,
-                                      venv_path / "etc" / "adbc" / "drivers");
-          }
+      auto venv = GetEnvPaths(conda_name);
+      if (!venv.empty()) {
+        for (const auto& [_, venv_path] : venv) {
+          search_paths.emplace_back(SearchPathSource::kConda,
+                                    venv_path / "etc" / "adbc" / "drivers");
         }
-      } else {
-        search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
-                                  "Conda prefix (enable ADBC_LOAD_FLAG_SEARCH_ENV)");
       }
-#else
-      if (load_options & ADBC_LOAD_FLAG_SEARCH_ENV) {
-        search_paths.emplace_back(SearchPathSource::kDisabledAtCompileTime,
-                                  "Conda prefix");
-      }
-#endif  // ADBC_CONDA_BUILD
-
-      auto status = SearchPathsForDriver(driver_path, search_paths, info, error);
-      if (status != ADBC_STATUS_NOT_FOUND) {
-        // If NOT_FOUND, then keep searching; if OK or INVALID_ARGUMENT, stop
-        return status;
-      }
-    }
-
-    // We searched environment paths and additional search paths (if they
-    // exist), so now search the rest.
-#ifdef _WIN32
-    // On Windows, check registry keys, not just search paths.
-    if (load_options & ADBC_LOAD_FLAG_SEARCH_USER) {
-      // Check the user registry for the driver.
-      auto status =
-          LoadDriverFromRegistry(HKEY_CURRENT_USER, driver_path.native(), info, error);
-      if (status == ADBC_STATUS_OK) {
-        return Load(info.lib_path.native(), {}, error);
-      }
-      if (error && error->message) {
-        std::string message = "HKEY_CURRENT_USER\\"s;
-        message += error->message;
-        search_paths.emplace_back(SearchPathSource::kRegistry, std::move(message));
-      } else {
-        search_paths.emplace_back(SearchPathSource::kRegistry,
-                                  "not found in HKEY_CURRENT_USER");
-      }
-
-      auto user_paths = GetSearchPaths(ADBC_LOAD_FLAG_SEARCH_USER);
-      status = SearchPathsForDriver(driver_path, user_paths, info, error);
-      if (status != ADBC_STATUS_NOT_FOUND) {
-        return status;
-      }
-      search_paths.insert(search_paths.end(), user_paths.begin(), user_paths.end());
     } else {
       search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
-                                "HKEY_CURRENT_USER (enable ADBC_LOAD_FLAG_SEARCH_USER)");
+                                "Conda prefix (enable ADBC_LOAD_FLAG_SEARCH_ENV)");
     }
-
-    if (load_options & ADBC_LOAD_FLAG_SEARCH_SYSTEM) {
-      // Check the system registry for the driver.
-      auto status =
-          LoadDriverFromRegistry(HKEY_LOCAL_MACHINE, driver_path.native(), info, error);
-      if (status == ADBC_STATUS_OK) {
-        return Load(info.lib_path.native(), {}, error);
-      }
-      if (error && error->message) {
-        std::string message = "HKEY_LOCAL_MACHINE\\"s;
-        message += error->message;
-        search_paths.emplace_back(SearchPathSource::kRegistry, std::move(message));
-      } else {
-        search_paths.emplace_back(SearchPathSource::kRegistry,
-                                  "not found in HKEY_LOCAL_MACHINE");
-      }
-
-      auto system_paths = GetSearchPaths(ADBC_LOAD_FLAG_SEARCH_SYSTEM);
-      status = SearchPathsForDriver(driver_path, system_paths, info, error);
-      if (status != ADBC_STATUS_NOT_FOUND) {
-        return status;
-      }
-      search_paths.insert(search_paths.end(), system_paths.begin(), system_paths.end());
-    } else {
-      search_paths.emplace_back(
-          SearchPathSource::kDisabledAtRunTime,
-          "HKEY_LOCAL_MACHINE (enable ADBC_LOAD_FLAG_SEARCH_SYSTEM)");
-    }
-
-    info.lib_path = driver_path;
-    return Load(driver_path.native(), search_paths, error);
 #else
-    // Otherwise, search the configured paths.
-    SearchPaths more_search_paths =
-        GetSearchPaths(load_options & ~ADBC_LOAD_FLAG_SEARCH_ENV);
-    auto status = SearchPathsForDriver(driver_path, more_search_paths, info, error);
-    if (status == ADBC_STATUS_NOT_FOUND) {
-      if (!(load_options & ADBC_LOAD_FLAG_SEARCH_USER)) {
-        std::filesystem::path user_config_dir = InternalAdbcUserConfigDir();
-        std::string message = "user config dir ";
-        message += user_config_dir.string();
-        message += " (enable ADBC_LOAD_FLAG_SEARCH_USER)";
-        more_search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
-                                       std::move(message));
-      }
-      // Windows searches registry keys, so this only applies to other OSes
+    if (load_options & ADBC_LOAD_FLAG_SEARCH_ENV) {
+      search_paths.emplace_back(SearchPathSource::kDisabledAtCompileTime, "Conda prefix");
+    }
+#endif  // ADBC_CONDA_BUILD
+
+    auto status = SearchPathsForDriver(driver_path, search_paths, info, error);
+    if (status != ADBC_STATUS_NOT_FOUND) {
+      // If NOT_FOUND, then keep searching; if OK or INVALID_ARGUMENT, stop
+      return status;
+    }
+  }
+
+  // We searched environment paths and additional search paths (if they
+  // exist), so now search the rest.
+#ifdef _WIN32
+  // On Windows, check registry keys, not just search paths.
+  if (load_options & ADBC_LOAD_FLAG_SEARCH_USER) {
+    // Check the user registry for the driver.
+    auto status =
+        LoadDriverFromRegistry(HKEY_CURRENT_USER, driver_path.native(), info, error);
+    if (status == ADBC_STATUS_OK) {
+      return Load(info.lib_path.native(), {}, error);
+    }
+    if (error && error->message) {
+      std::string message = "HKEY_CURRENT_USER\\"s;
+      message += error->message;
+      search_paths.emplace_back(SearchPathSource::kRegistry, std::move(message));
+    } else {
+      search_paths.emplace_back(SearchPathSource::kRegistry,
+                                "not found in HKEY_CURRENT_USER");
+    }
+
+    auto user_paths = GetSearchPaths(ADBC_LOAD_FLAG_SEARCH_USER);
+    status = SearchPathsForDriver(driver_path, user_paths, info, error);
+    if (status != ADBC_STATUS_NOT_FOUND) {
+      return status;
+    }
+    search_paths.insert(search_paths.end(), user_paths.begin(), user_paths.end());
+  } else {
+    search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
+                              "HKEY_CURRENT_USER (enable ADBC_LOAD_FLAG_SEARCH_USER)");
+  }
+
+  if (load_options & ADBC_LOAD_FLAG_SEARCH_SYSTEM) {
+    // Check the system registry for the driver.
+    auto status =
+        LoadDriverFromRegistry(HKEY_LOCAL_MACHINE, driver_path.native(), info, error);
+    if (status == ADBC_STATUS_OK) {
+      return Load(info.lib_path.native(), {}, error);
+    }
+    if (error && error->message) {
+      std::string message = "HKEY_LOCAL_MACHINE\\"s;
+      message += error->message;
+      search_paths.emplace_back(SearchPathSource::kRegistry, std::move(message));
+    } else {
+      search_paths.emplace_back(SearchPathSource::kRegistry,
+                                "not found in HKEY_LOCAL_MACHINE");
+    }
+
+    auto system_paths = GetSearchPaths(ADBC_LOAD_FLAG_SEARCH_SYSTEM);
+    status = SearchPathsForDriver(driver_path, system_paths, info, error);
+    if (status != ADBC_STATUS_NOT_FOUND) {
+      return status;
+    }
+    search_paths.insert(search_paths.end(), system_paths.begin(), system_paths.end());
+  } else {
+    search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
+                              "HKEY_LOCAL_MACHINE (enable ADBC_LOAD_FLAG_SEARCH_SYSTEM)");
+  }
+
+  info.lib_path = driver_path;
+  return Load(driver_path.native(), search_paths, error);
+#else
+  // Otherwise, search the configured paths.
+  SearchPaths more_search_paths =
+      GetSearchPaths(load_options & ~ADBC_LOAD_FLAG_SEARCH_ENV);
+  auto status = SearchPathsForDriver(driver_path, more_search_paths, info, error);
+  if (status == ADBC_STATUS_NOT_FOUND) {
+    if (!(load_options & ADBC_LOAD_FLAG_SEARCH_USER)) {
+      std::filesystem::path user_config_dir = InternalAdbcUserConfigDir();
+      std::string message = "user config dir ";
+      message += user_config_dir.string();
+      message += " (enable ADBC_LOAD_FLAG_SEARCH_USER)";
+      more_search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
+                                     std::move(message));
+    }
+    // Windows searches registry keys, so this only applies to other OSes
 #if !defined(_WIN32)
-      if (!(load_options & ADBC_LOAD_FLAG_SEARCH_SYSTEM)) {
-        std::filesystem::path system_config_dir = InternalAdbcSystemConfigDir();
-        std::string message = "system config dir ";
-        message += system_config_dir.string();
-        message += " (enable ADBC_LOAD_FLAG_SEARCH_SYSTEM)";
-        more_search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
-                                       std::move(message));
-      }
+    if (!(load_options & ADBC_LOAD_FLAG_SEARCH_SYSTEM)) {
+      std::filesystem::path system_config_dir = InternalAdbcSystemConfigDir();
+      std::string message = "system config dir ";
+      message += system_config_dir.string();
+      message += " (enable ADBC_LOAD_FLAG_SEARCH_SYSTEM)";
+      more_search_paths.emplace_back(SearchPathSource::kDisabledAtRunTime,
+                                     std::move(message));
+    }
 #endif  // !defined(_WIN32)
 
-      // If we reach here, we didn't find the driver in any of the paths
-      // so let's just attempt to load it as default behavior.
-      search_paths.insert(search_paths.end(), more_search_paths.begin(),
-                          more_search_paths.end());
-      info.lib_path = driver_path;
-      return Load(driver_path.native(), search_paths, error);
-    }
-    return status;
-#endif  // _WIN32
+    // If we reach here, we didn't find the driver in any of the paths
+    // so let's just attempt to load it as default behavior.
+    search_paths.insert(search_paths.end(), more_search_paths.begin(),
+                        more_search_paths.end());
+    info.lib_path = driver_path;
+    return Load(driver_path.native(), search_paths, error);
   }
+  return status;
+#endif  // _WIN32
+}
 
-  /// \return ADBC_STATUS_NOT_FOUND if the driver shared library could not be
-  ///   found, ADBC_STATUS_OK otherwise
-  AdbcStatusCode Load(const string_type& library, const SearchPaths& attempted_paths,
-                      struct AdbcError* error) {
-    std::string error_message;
+/// \return ADBC_STATUS_NOT_FOUND if the driver shared library could not be
+///   found, ADBC_STATUS_OK otherwise
+AdbcStatusCode ManagedLibrary::Load(const string_type& library,
+                                    const SearchPaths& attempted_paths,
+                                    struct AdbcError* error) {
+  std::string error_message;
 #if defined(_WIN32)
-    HMODULE handle = LoadLibraryExW(library.c_str(), NULL, 0);
-    if (!handle) {
-      error_message = "Could not load `";
-      error_message += Utf8Encode(library);
-      error_message += "`: LoadLibraryExW() failed: ";
-      GetWinError(&error_message);
+  HMODULE handle = LoadLibraryExW(library.c_str(), NULL, 0);
+  if (!handle) {
+    error_message = "Could not load `";
+    error_message += Utf8Encode(library);
+    error_message += "`: LoadLibraryExW() failed: ";
+    GetWinError(&error_message);
 
-      std::wstring full_driver_name = library;
-      full_driver_name += L".dll";
-      handle = LoadLibraryExW(full_driver_name.c_str(), NULL, 0);
-      if (!handle) {
-        error_message += '\n';
-        error_message += Utf8Encode(full_driver_name);
-        error_message += ": LoadLibraryExW() failed: ";
-        GetWinError(&error_message);
-      }
-    }
+    std::wstring full_driver_name = library;
+    full_driver_name += L".dll";
+    handle = LoadLibraryExW(full_driver_name.c_str(), NULL, 0);
     if (!handle) {
-      std::string name = Utf8Encode(library);
-      std::string message = CheckNonPrintableLibraryName(name);
-      if (!message.empty()) {
-        error_message += "\n";
-        error_message += message;
-      }
-      AddSearchPathsToError(attempted_paths, SearchPathType::kManifest, error_message);
-      SetError(error, error_message);
-      return ADBC_STATUS_NOT_FOUND;
-    } else {
-      this->handle = handle;
+      error_message += '\n';
+      error_message += Utf8Encode(full_driver_name);
+      error_message += ": LoadLibraryExW() failed: ";
+      GetWinError(&error_message);
     }
+  }
+  if (!handle) {
+    std::string name = Utf8Encode(library);
+    std::string message = CheckNonPrintableLibraryName(name);
+    if (!message.empty()) {
+      error_message += "\n";
+      error_message += message;
+    }
+    AddSearchPathsToError(attempted_paths, SearchPathType::kManifest, error_message);
+    SetError(error, error_message);
+    return ADBC_STATUS_NOT_FOUND;
+  } else {
+    this->handle = handle;
+  }
 #else
-    static const std::string kPlatformLibraryPrefix = "lib";
+  static const std::string kPlatformLibraryPrefix = "lib";
 #if defined(__APPLE__)
-    static const std::string kPlatformLibrarySuffix = ".dylib";
+  static const std::string kPlatformLibrarySuffix = ".dylib";
 #else
-    static const std::string kPlatformLibrarySuffix = ".so";
+  static const std::string kPlatformLibrarySuffix = ".so";
 #endif  // defined(__APPLE__)
 
-    void* handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
+  void* handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (!handle) {
+    error_message = "Could not load `";
+    error_message += library;
+    error_message += "`: dlopen() failed: ";
+    error_message += dlerror();
+
+    // If applicable, append the shared library prefix/extension and
+    // try again (this way you don't have to hardcode driver names by
+    // platform in the application)
+    const std::string driver_str = library;
+
+    std::string full_driver_name;
+    if (driver_str.size() < kPlatformLibraryPrefix.size() ||
+        driver_str.compare(0, kPlatformLibraryPrefix.size(), kPlatformLibraryPrefix) !=
+            0) {
+      full_driver_name += kPlatformLibraryPrefix;
+    }
+    full_driver_name += library;
+    if (driver_str.size() < kPlatformLibrarySuffix.size() ||
+        driver_str.compare(full_driver_name.size() - kPlatformLibrarySuffix.size(),
+                           kPlatformLibrarySuffix.size(), kPlatformLibrarySuffix) != 0) {
+      full_driver_name += kPlatformLibrarySuffix;
+    }
+    handle = dlopen(full_driver_name.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
-      error_message = "Could not load `";
-      error_message += library;
-      error_message += "`: dlopen() failed: ";
+      error_message += "\ndlopen() failed: ";
       error_message += dlerror();
-
-      // If applicable, append the shared library prefix/extension and
-      // try again (this way you don't have to hardcode driver names by
-      // platform in the application)
-      const std::string driver_str = library;
-
-      std::string full_driver_name;
-      if (driver_str.size() < kPlatformLibraryPrefix.size() ||
-          driver_str.compare(0, kPlatformLibraryPrefix.size(), kPlatformLibraryPrefix) !=
-              0) {
-        full_driver_name += kPlatformLibraryPrefix;
-      }
-      full_driver_name += library;
-      if (driver_str.size() < kPlatformLibrarySuffix.size() ||
-          driver_str.compare(full_driver_name.size() - kPlatformLibrarySuffix.size(),
-                             kPlatformLibrarySuffix.size(),
-                             kPlatformLibrarySuffix) != 0) {
-        full_driver_name += kPlatformLibrarySuffix;
-      }
-      handle = dlopen(full_driver_name.c_str(), RTLD_NOW | RTLD_LOCAL);
-      if (!handle) {
-        error_message += "\ndlopen() failed: ";
-        error_message += dlerror();
-      }
     }
-    if (handle) {
-      this->handle = handle;
-    } else {
-      std::string message = CheckNonPrintableLibraryName(library);
-      if (!message.empty()) {
-        error_message += "\n";
-        error_message += message;
-      }
-      AddSearchPathsToError(attempted_paths, SearchPathType::kManifest, error_message);
-      SetError(error, error_message);
-      return ADBC_STATUS_NOT_FOUND;
-    }
-#endif  // defined(_WIN32)
-    return ADBC_STATUS_OK;
   }
-
-  AdbcStatusCode Lookup(const char* name, void** func, struct AdbcError* error) {
-#if defined(_WIN32)
-    void* load_handle = reinterpret_cast<void*>(GetProcAddress(handle, name));
-    if (!load_handle) {
-      std::string message = "GetProcAddress(";
-      message += name;
-      message += ") failed: ";
-      GetWinError(&message);
-      AppendError(error, message);
-      return ADBC_STATUS_INTERNAL;
+  if (handle) {
+    this->handle = handle;
+  } else {
+    std::string message = CheckNonPrintableLibraryName(library);
+    if (!message.empty()) {
+      error_message += "\n";
+      error_message += message;
     }
-#else
-    void* load_handle = dlsym(handle, name);
-    if (!load_handle) {
-      std::string message = "dlsym(";
-      message += name;
-      message += ") failed: ";
-      message += dlerror();
-      AppendError(error, message);
-      return ADBC_STATUS_INTERNAL;
-    }
-#endif  // defined(_WIN32)
-    *func = load_handle;
-    return ADBC_STATUS_OK;
+    AddSearchPathsToError(attempted_paths, SearchPathType::kManifest, error_message);
+    SetError(error, error_message);
+    return ADBC_STATUS_NOT_FOUND;
   }
-
-#if defined(_WIN32)
-  // The loaded DLL
-  HMODULE handle;
-#else
-  void* handle;
 #endif  // defined(_WIN32)
-};
+  return ADBC_STATUS_OK;
+}
+
+AdbcStatusCode ManagedLibrary::Lookup(const char* name, void** func,
+                                      struct AdbcError* error) {
+#if defined(_WIN32)
+  void* load_handle = reinterpret_cast<void*>(GetProcAddress(handle, name));
+  if (!load_handle) {
+    std::string message = "GetProcAddress(";
+    message += name;
+    message += ") failed: ";
+    GetWinError(&message);
+    AppendError(error, message);
+    return ADBC_STATUS_INTERNAL;
+  }
+#else
+  void* load_handle = dlsym(handle, name);
+  if (!load_handle) {
+    std::string message = "dlsym(";
+    message += name;
+    message += ") failed: ";
+    message += dlerror();
+    AppendError(error, message);
+    return ADBC_STATUS_INTERNAL;
+  }
+#endif  // defined(_WIN32)
+  *func = load_handle;
+  return ADBC_STATUS_OK;
+}
 
 ADBC_EXPORT
 std::string InternalAdbcDriverManagerDefaultEntrypoint(const std::string& driver) {

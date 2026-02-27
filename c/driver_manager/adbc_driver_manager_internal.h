@@ -87,24 +87,82 @@ inline OwnedError::~OwnedError() {
   }
 }
 
+// Platform helpers
+#ifdef _WIN32
+using char_type = wchar_t;
+using string_type = std::wstring;
+
+std::string Utf8Encode(const std::wstring& wstr);
+std::wstring Utf8Decode(const std::string& str);
+void GetWinError(std::string* buffer);
+#else
+using char_type = char;
+using string_type = std::string;
+#endif
+
+struct ManagedLibrary {
+  ManagedLibrary() : handle(nullptr) {}
+  ManagedLibrary(ManagedLibrary&& other) : handle(other.handle) {
+    other.handle = nullptr;
+  }
+  ManagedLibrary(const ManagedLibrary&) = delete;
+  ManagedLibrary& operator=(const ManagedLibrary&) = delete;
+  ManagedLibrary& operator=(ManagedLibrary&& other) noexcept {
+    this->handle = other.handle;
+    other.handle = nullptr;
+    return *this;
+  }
+
+  ~ManagedLibrary() { Release(); }
+  void Release();
+  /// \brief Resolve the driver name to a concrete location.
+  AdbcStatusCode GetDriverInfo(
+      const std::string_view driver_name, const AdbcLoadFlags load_options,
+      const std::vector<std::filesystem::path>& additional_search_paths, DriverInfo& info,
+      struct AdbcError* error);
+
+  /// \return ADBC_STATUS_NOT_FOUND if the driver shared library could not be
+  ///   found (via dlopen) or if a manifest was found but did not contain a
+  ///   path for the current platform, ADBC_STATUS_INVALID_ARGUMENT if a
+  ///   manifest was found but could not be parsed, ADBC_STATUS_OK otherwise
+  ///
+  /// May modify search_paths to add error info
+  AdbcStatusCode SearchPathsForDriver(const std::filesystem::path& driver_path,
+                                      SearchPaths& search_paths, DriverInfo& info,
+                                      struct AdbcError* error);
+
+  AdbcStatusCode FindDriver(
+      const std::filesystem::path& driver_path, const AdbcLoadFlags load_options,
+      const std::vector<std::filesystem::path>& additional_search_paths, DriverInfo& info,
+      struct AdbcError* error);
+
+  /// \return ADBC_STATUS_NOT_FOUND if the driver shared library could not be
+  ///   found, ADBC_STATUS_OK otherwise
+  AdbcStatusCode Load(const string_type& library, const SearchPaths& attempted_paths,
+                      struct AdbcError* error);
+
+  AdbcStatusCode Lookup(const char* name, void** func, struct AdbcError* error);
+
+#if defined(_WIN32)
+  // The loaded DLL
+  HMODULE handle;
+#else
+  void* handle;
+#endif  // defined(_WIN32)
+};
+
 // Error handling
 void ReleaseError(struct AdbcError* error);
 void SetError(struct AdbcError* error, const std::string& message);
 void AppendError(struct AdbcError* error, const std::string& message);
 void SetError(struct AdbcError* error, struct AdbcError* src_error);
 
-// Platform helpers
-#ifdef _WIN32
-std::string Utf8Encode(const std::wstring& wstr);
-std::wstring Utf8Decode(const std::string& str);
-void GetWinError(std::string* buffer);
-#endif
-
 // Utilities
 std::string CheckNonPrintableLibraryName(const std::string& name);
 bool HasExtension(const std::filesystem::path& path, const std::string& ext);
 void AddSearchPathsToError(const SearchPaths& search_paths, const SearchPathType& type,
                            std::string& error_message);
+SearchPaths GetEnvPaths(const char_type* env_var);
 
 // Path management
 std::vector<std::filesystem::path> InternalAdbcParsePath(const std::string_view path);
@@ -167,5 +225,26 @@ AdbcStatusCode AdbcFindLoadDriver(const char* driver_name, const char* entrypoin
                                   void* raw_driver, struct AdbcError* error);
 // ReleaseDriver is implemented in adbc_driver_manager.cc but used by API implementations
 AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error);
+
+#define INIT_ERROR(ERROR, SOURCE)                                    \
+  if ((ERROR) != nullptr &&                                          \
+      (ERROR)->vendor_code == ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA) { \
+    (ERROR)->private_driver = (SOURCE)->private_driver;              \
+  }
+
+#define WRAP_STREAM(EXPR, OUT, SOURCE)                   \
+  if (!(OUT)) {                                          \
+    /* Happens for ExecuteQuery where out is optional */ \
+    return EXPR;                                         \
+  }                                                      \
+  AdbcStatusCode status_code = EXPR;                     \
+  ErrorArrayStreamInit(OUT, (SOURCE)->private_driver);   \
+  return status_code;
+
+#ifdef _WIN32
+inline const wchar_t* kAdbcDriverPath = L"ADBC_DRIVER_PATH";
+#else
+inline const char* kAdbcDriverPath = "ADBC_DRIVER_PATH";
+#endif  // _WIN32
 
 #endif  // ADBC_DRIVER_MANAGER_INTERNAL_H
