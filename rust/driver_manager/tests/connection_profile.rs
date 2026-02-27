@@ -448,7 +448,8 @@ fn test_profile_hierarchical_path_via_env_var() {
     // Create a profile in the nested directory
     let profile_path = postgres_dir.join("production.toml");
     std::fs::write(&profile_path, simple_profile()).expect("Failed to write profile");
-
+    println!("Creating profile at {}", profile_path.display());
+    
     // Verify the file was created
     assert!(
         profile_path.is_file(),

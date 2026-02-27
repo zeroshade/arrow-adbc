@@ -882,7 +882,7 @@ pub(crate) fn find_filesystem_profile(
             }
         })
         .ok_or_else(|| {
-            Error::with_message_and_status(format!("Profile not found: {}", name), Status::NotFound)
+            Error::with_message_and_status(format!("Profile not found: {}, attempted: {}", name, actual_path.display()), Status::NotFound)
         })
 }
 
