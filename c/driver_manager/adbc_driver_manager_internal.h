@@ -31,6 +31,12 @@
 
 // Forward declarations and shared utilities for driver manager implementation
 
+// Forward declare C types from adbc_driver_manager.h for use in C++ contexts
+struct AdbcConnectionProfile;
+typedef AdbcStatusCode (*AdbcConnectionProfileProvider)(
+    const char* profile_name, const char* additional_search_path_list,
+    struct AdbcConnectionProfile* out, struct AdbcError* error);
+
 namespace {
 
 // Platform-specific type aliases
@@ -113,6 +119,7 @@ std::filesystem::path InternalAdbcUserConfigDir();
 #if !defined(_WIN32)
 std::filesystem::path InternalAdbcSystemConfigDir();
 #endif
+std::optional<ParseDriverUriResult> InternalAdbcParseDriverUri(std::string_view str);
 
 // Search paths
 SearchPaths GetSearchPaths(const AdbcLoadFlags levels);
@@ -137,7 +144,29 @@ AdbcStatusCode LoadProfileFile(const std::filesystem::path& profile_path,
                               FilesystemProfile& profile, struct AdbcError* error);
 
 // Initialization
-struct TempDatabase;
+/// Temporary state while the database is being configured.
+struct TempDatabase {
+  std::unordered_map<std::string, std::string> options;
+  std::unordered_map<std::string, std::string> bytes_options;
+  std::unordered_map<std::string, int64_t> int_options;
+  std::unordered_map<std::string, double> double_options;
+  std::string driver;
+  std::string entrypoint;
+  AdbcDriverInitFunc init_func = nullptr;
+  AdbcLoadFlags load_flags = ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS;
+  std::string additional_search_path_list;
+  AdbcConnectionProfileProvider profile_provider = nullptr;
+};
+
+/// Temporary state while the connection is being configured.
+struct TempConnection {
+  std::unordered_map<std::string, std::string> options;
+  std::unordered_map<std::string, std::string> bytes_options;
+  std::unordered_map<std::string, int64_t> int_options;
+  std::unordered_map<std::string, double> double_options;
+  AdbcConnectionProfile* connection_profile = nullptr;
+};
+
 AdbcStatusCode InternalInitializeProfile(TempDatabase* args,
                                         const std::string_view profile,
                                         struct AdbcError* error);
