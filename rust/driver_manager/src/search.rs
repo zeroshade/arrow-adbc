@@ -911,6 +911,10 @@ fn get_profile_search_paths(additional_path_list: Option<Vec<PathBuf>>) -> Vec<P
 
     // Add ADBC_PROFILE_PATH environment variable paths
     if let Some(paths) = env::var_os("ADBC_PROFILE_PATH") {
+        println!(
+            "Adding ADBC_PROFILE_PATH directories to search path: {:?}",
+            paths.display()
+        );
         result.extend(env::split_paths(&paths));
     }
 
@@ -936,6 +940,7 @@ fn get_profile_search_paths(additional_path_list: Option<Vec<PathBuf>>) -> Vec<P
         result.push(profiles_dir.join(PROFILE_DIR_NAME));
     }
 
+    println!("Final profile search paths: {:?}", result.iter().map(|p| p.display()).collect::<Vec<_>>());
     result
 }
 
