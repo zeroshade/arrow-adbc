@@ -34,6 +34,11 @@
 
 using namespace std::string_literals;  // NOLINT [build/namespaces]
 
+#define CHECK_STATUS(EXPR)                                \
+  if (auto _status = (EXPR); _status != ADBC_STATUS_OK) { \
+    return _status;                                       \
+  }
+
 ADBC_EXPORT
 std::vector<std::filesystem::path> InternalAdbcParsePath(const std::string_view path);
 ADBC_EXPORT
@@ -70,13 +75,11 @@ using char_type = char;
 using string_type = std::string;
 #endif  // _WIN32
 
-#if 0  // Unused - kept for potential future use
 #ifdef _WIN32
 static const wchar_t* kAdbcProfilePath = L"ADBC_PROFILE_PATH";
 #else
 static const char* kAdbcProfilePath = "ADBC_PROFILE_PATH";
 #endif  // _WIN32
-#endif
 
 }  // namespace (reopen after moving types outside)
 
@@ -158,7 +161,6 @@ static AdbcStatusCode ProcessProfileValueInternal(std::string_view value, std::s
   return ADBC_STATUS_OK;
 }
 
-#if 0  // Unused - kept for potential future use
 SearchPaths GetEnvPaths(const char_type* env_var) {
 #ifdef _WIN32
   DWORD required_size = GetEnvironmentVariableW(env_var, NULL, 0);
@@ -185,7 +187,6 @@ SearchPaths GetEnvPaths(const char_type* env_var) {
   }
   return paths;
 }
-#endif
 
 }  // namespace (closing early to move types outside)
 
@@ -406,11 +407,8 @@ AdbcStatusCode LoadProfileFile(const std::filesystem::path& profile_path,
   return ADBC_STATUS_OK;
 }
 
-// Reopen anonymous namespace for unused helper (commented out to avoid unused warning)
 namespace {
 
-// Unused - kept for potential future use
-#if 0
 static SearchPaths GetProfileSearchPaths(const char* additional_search_path_list) {
   SearchPaths search_paths;
   {
@@ -457,6 +455,96 @@ static SearchPaths GetProfileSearchPaths(const char* additional_search_path_list
   search_paths.emplace_back(SearchPathSource::kUser, user_dir);
   return search_paths;
 }
-#endif
 
 }  // namespace
+
+AdbcStatusCode AdbcProfileProviderFilesystem(const char* profile_name,
+                                             const char* additional_search_path_list,
+                                             struct AdbcConnectionProfile* out,
+                                             struct AdbcError* error) {
+  if (profile_name == nullptr || strlen(profile_name) == 0) {
+    SetError(error, "Profile name is empty");
+    return ADBC_STATUS_INVALID_ARGUMENT;
+  }
+
+  if (!out) {
+    SetError(error, "Output profile is null");
+    return ADBC_STATUS_INVALID_ARGUMENT;
+  }
+
+  std::memset(out, 0, sizeof(*out));
+  std::filesystem::path profile_path(profile_name);
+  if (profile_path.has_extension()) {
+    if (HasExtension(profile_path, ".toml")) {
+      if (!std::filesystem::exists(profile_path)) {
+        SetError(error, "Profile file does not exist: " + profile_path.string());
+        return ADBC_STATUS_NOT_FOUND;
+      }
+
+      FilesystemProfile profile;
+      CHECK_STATUS(LoadProfileFile(profile_path, profile, error));
+      profile.PopulateConnectionProfile(out);
+      return ADBC_STATUS_OK;
+    }
+  }
+
+  if (profile_path.is_absolute()) {
+    profile_path.replace_extension(".toml");
+
+    FilesystemProfile profile;
+    CHECK_STATUS(LoadProfileFile(profile_path, profile, error));
+    profile.PopulateConnectionProfile(out);
+    return ADBC_STATUS_OK;
+  }
+
+  SearchPaths search_paths = GetProfileSearchPaths(additional_search_path_list);
+  SearchPaths extra_debug_info;
+  for (const auto& [source, search_path] : search_paths) {
+    if (source == SearchPathSource::kRegistry || source == SearchPathSource::kUnset ||
+        source == SearchPathSource::kDoesNotExist ||
+        source == SearchPathSource::kDisabledAtCompileTime ||
+        source == SearchPathSource::kDisabledAtRunTime ||
+        source == SearchPathSource::kOtherError) {
+      continue;
+    }
+
+    std::filesystem::path full_path = search_path / profile_path;
+    full_path.replace_extension(".toml");
+    if (std::filesystem::exists(full_path)) {
+      OwnedError intermediate_error;
+
+      FilesystemProfile profile;
+      auto status = LoadProfileFile(full_path, profile, &intermediate_error.error);
+      if (status == ADBC_STATUS_OK) {
+        profile.PopulateConnectionProfile(out);
+        return ADBC_STATUS_OK;
+      } else if (status == ADBC_STATUS_INVALID_ARGUMENT) {
+        search_paths.insert(search_paths.end(), extra_debug_info.begin(),
+                            extra_debug_info.end());
+        if (intermediate_error.error.message) {
+          std::string error_message = intermediate_error.error.message;
+          AddSearchPathsToError(search_paths, SearchPathType::kProfile, error_message);
+          SetError(error, std::move(error_message));
+        }
+        return status;
+      }
+
+      std::string message = "found ";
+      message += full_path.string();
+      message += " but: ";
+      if (intermediate_error.error.message) {
+        message += intermediate_error.error.message;
+      } else {
+        message += "could not load the profile";
+      }
+      extra_debug_info.emplace_back(SearchPathSource::kOtherError, std::move(message));
+    }
+  }
+
+  search_paths.insert(search_paths.end(), extra_debug_info.begin(),
+                      extra_debug_info.end());
+  std::string error_message = "Profile not found: " + std::string(profile_name);
+  AddSearchPathsToError(search_paths, SearchPathType::kProfile, error_message);
+  SetError(error, std::move(error_message));
+  return ADBC_STATUS_NOT_FOUND;
+}
