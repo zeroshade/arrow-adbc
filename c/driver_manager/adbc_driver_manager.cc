@@ -65,94 +65,14 @@ ADBC_EXPORT
 std::filesystem::path InternalAdbcSystemConfigDir();
 #endif  // !defined(_WIN32)
 
-struct ParseDriverUriResult {
-  std::string_view driver;
-  std::optional<std::string_view> uri;
-  std::optional<std::string_view> profile;
-};
-
 ADBC_EXPORT
 std::optional<ParseDriverUriResult> InternalAdbcParseDriverUri(std::string_view str);
 
 namespace {
 
-/// \brief Where a search path came from (for error reporting)
-enum class SearchPathSource {
-  kEnv,
-  kUser,
-  kRegistry,
-  kSystem,
-  kAdditional,
-  kConda,
-  kUnset,
-  kDoesNotExist,
-  kDisabledAtCompileTime,
-  kDisabledAtRunTime,
-  kOtherError,
-};
-
-enum class SearchPathType {
-  kManifest,
-  kProfile,
-};
-
-using SearchPaths = std::vector<std::pair<SearchPathSource, std::filesystem::path>>;
-
-void AddSearchPathsToError(const SearchPaths& search_paths, const SearchPathType& type,
-                           std::string& error_message) {
-  if (!search_paths.empty()) {
-    error_message += "\nAlso searched these paths for";
-    if (type == SearchPathType::kManifest) {
-      error_message += " manifests:";
-    } else if (type == SearchPathType::kProfile) {
-      error_message += " profiles:";
-    }
-
-    for (const auto& [source, path] : search_paths) {
-      error_message += "\n\t";
-      switch (source) {
-        case SearchPathSource::kEnv:
-          if (type == SearchPathType::kManifest) {
-            error_message += "ADBC_DRIVER_PATH: ";
-          } else if (type == SearchPathType::kProfile) {
-            error_message += "ADBC_PROFILE_PATH: ";
-          }
-          break;
-        case SearchPathSource::kUser:
-          error_message += "user config dir: ";
-          break;
-        case SearchPathSource::kRegistry:
-          error_message += "Registry: ";
-          break;
-        case SearchPathSource::kSystem:
-          error_message += "system config dir: ";
-          break;
-        case SearchPathSource::kAdditional:
-          error_message += "additional search path: ";
-          break;
-        case SearchPathSource::kConda:
-          error_message += "Conda prefix: ";
-          break;
-        case SearchPathSource::kUnset:
-          error_message += "not set: ";
-          break;
-        case SearchPathSource::kDoesNotExist:
-          error_message += "does not exist: ";
-          break;
-        case SearchPathSource::kDisabledAtCompileTime:
-          error_message += "not enabled at build time: ";
-          break;
-        case SearchPathSource::kDisabledAtRunTime:
-          error_message += "not enabled at run time: ";
-          break;
-        case SearchPathSource::kOtherError:
-          // Don't add any prefix
-          break;
-      }
-      error_message += path.string();
-    }
-  }
-}
+// NOTE: Error handling, structures, and helper functions are now in internal header
+// and shared across all source files. This anonymous namespace only contains
+// implementation-specific helpers for this file.
 
 // Generate a note for the error message if the library name has potentially
 // non-printable (or really non-ASCII-printable-range) characters.  Oblivious
@@ -207,76 +127,6 @@ void GetWinError(std::string* buffer) {
 
 // Error handling
 
-void ReleaseError(struct AdbcError* error) {
-  if (error) {
-    if (error->message) delete[] error->message;
-    error->message = nullptr;
-    error->release = nullptr;
-  }
-}
-
-void SetError(struct AdbcError* error, const std::string& message) {
-  static const std::string kPrefix = "[Driver Manager] ";
-
-  if (!error) return;
-  if (error->release) error->release(error);
-
-  // Prepend a string to identify driver manager errors
-  error->message = new char[kPrefix.size() + message.size() + 1];
-  kPrefix.copy(error->message, kPrefix.size());
-  message.copy(error->message + kPrefix.size(), message.size());
-  error->message[kPrefix.size() + message.size()] = '\0';
-  error->release = ReleaseError;
-}
-
-void AppendError(struct AdbcError* error, const std::string& message) {
-  if (!error) return;
-  if (!error->release || !error->message) {
-    SetError(error, message);
-    return;
-  }
-
-  size_t original_length = std::strlen(error->message);
-  size_t combined_length = original_length + 1 + message.size() + 1;
-  char* new_message = new char[combined_length];
-  std::ignore = std::snprintf(new_message, combined_length, "%s\n%s", error->message,
-                              message.c_str());
-
-  error->release(error);
-  error->message = new_message;
-  error->release = ReleaseError;
-}
-
-// Copies src_error into error and releases src_error
-void SetError(struct AdbcError* error, struct AdbcError* src_error) {
-  if (!error) return;
-  if (error->release) error->release(error);
-
-  if (src_error->message) {
-    size_t message_size = strlen(src_error->message);
-    error->message = new char[message_size + 1];  // +1 to include null
-    std::memcpy(error->message, src_error->message, message_size);
-    error->message[message_size] = '\0';
-  } else {
-    error->message = nullptr;
-  }
-
-  error->release = ReleaseError;
-  if (src_error->release) {
-    src_error->release(src_error);
-  }
-}
-
-struct OwnedError {
-  struct AdbcError error = ADBC_ERROR_INIT;
-
-  ~OwnedError() {
-    if (error.release) {
-      error.release(&error);
-    }
-  }
-};
-
 #ifdef _WIN32
 using char_type = wchar_t;
 using string_type = std::wstring;
@@ -305,18 +155,6 @@ std::wstring Utf8Decode(const std::string& str) {
 using char_type = char;
 using string_type = std::string;
 #endif  // _WIN32
-
-/// \brief The location and entrypoint of a resolved driver.
-struct DriverInfo {
-  std::string manifest_file;
-  int64_t manifest_version = 0;
-  std::string driver_name;
-  std::filesystem::path lib_path;
-  std::string entrypoint;
-
-  std::string version;
-  std::string source;
-};
 
 #ifdef _WIN32
 class RegistryKey {
@@ -408,10 +246,8 @@ SearchPaths GetEnvPaths(const char_type* env_var) {
 
 #ifdef _WIN32
 static const wchar_t* kAdbcDriverPath = L"ADBC_DRIVER_PATH";
-static const wchar_t* kAdbcProfilePath = L"ADBC_PROFILE_PATH";
 #else
 static const char* kAdbcDriverPath = "ADBC_DRIVER_PATH";
-static const char* kAdbcProfilePath = "ADBC_PROFILE_PATH";
 #endif  // _WIN32
 
 SearchPaths GetSearchPaths(const AdbcLoadFlags levels) {
@@ -1088,53 +924,6 @@ struct ProfileVisitor {
   }
 };
 
-SearchPaths GetProfileSearchPaths(const char* additional_search_path_list) {
-  SearchPaths search_paths;
-  {
-    std::vector<std::filesystem::path> additional_paths;
-    if (additional_search_path_list) {
-      additional_paths = InternalAdbcParsePath(additional_search_path_list);
-    }
-
-    for (const auto& path : additional_paths) {
-      search_paths.emplace_back(SearchPathSource::kAdditional, path);
-    }
-  }
-
-  {
-    auto env_paths = GetEnvPaths(kAdbcProfilePath);
-    search_paths.insert(search_paths.end(), env_paths.begin(), env_paths.end());
-  }
-
-#if ADBC_CONDA_BUILD
-#ifdef _WIN32
-  const wchar_t* conda_name = L"CONDA_PREFIX";
-#else
-  const char* conda_name = "CONDA_PREFIX";
-#endif  // _WIN32
-
-  auto venv = GetEnvPaths(conda_name);
-  for (const auto& [_, venv_path] : venv) {
-    search_paths.emplace_back(SearchPathSource::kConda,
-                              venv_path / "etc" / "adbc" / "profiles");
-  }
-#else
-  search_paths.emplace_back(SearchPathSource::kDisabledAtCompileTime, "Conda prefix");
-#endif  // ADBC_CONDA_BUILD
-
-#ifdef _WIN32
-  const wchar_t* profiles_dir = L"Profiles";
-#elif defined(__APPLE__)
-  const char* profiles_dir = "Profiles";
-#else
-  const char* profiles_dir = "profiles";
-#endif  // defined(_WIN32)
-
-  auto user_dir = InternalAdbcUserConfigDir().parent_path() / profiles_dir;
-  search_paths.emplace_back(SearchPathSource::kUser, user_dir);
-  return search_paths;
-}
-
 /// Hold the driver DLL and the driver release callback in the driver struct.
 struct ManagerDriverState {
   // The original release callback
@@ -1144,7 +933,7 @@ struct ManagerDriverState {
 };
 
 /// Unload the driver DLL.
-AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error) {
+static AdbcStatusCode ReleaseDriverInternal(struct AdbcDriver* driver, struct AdbcError* error) {
   AdbcStatusCode status = ADBC_STATUS_OK;
 
   if (!driver->private_manager) return status;
@@ -1161,45 +950,133 @@ AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error)
   return status;
 }
 
-// ArrowArrayStream wrapper to support AdbcErrorFromArrayStream
-
-struct ErrorArrayStream {
-  struct ArrowArrayStream stream;
-  struct AdbcDriver* private_driver;
-};
-
-void ErrorArrayStreamRelease(struct ArrowArrayStream* stream) {
-  if (stream->release != ErrorArrayStreamRelease || !stream->private_data) return;
-
-  auto* private_data = reinterpret_cast<struct ErrorArrayStream*>(stream->private_data);
-  private_data->stream.release(&private_data->stream);
-  delete private_data;
-  std::memset(stream, 0, sizeof(*stream));
-}
-
-const char* ErrorArrayStreamGetLastError(struct ArrowArrayStream* stream) {
-  if (stream->release != ErrorArrayStreamRelease || !stream->private_data) return nullptr;
-  auto* private_data = reinterpret_cast<struct ErrorArrayStream*>(stream->private_data);
-  return private_data->stream.get_last_error(&private_data->stream);
-}
-
-int ErrorArrayStreamGetNext(struct ArrowArrayStream* stream, struct ArrowArray* array) {
-  if (stream->release != ErrorArrayStreamRelease || !stream->private_data) return EINVAL;
-  auto* private_data = reinterpret_cast<struct ErrorArrayStream*>(stream->private_data);
-  return private_data->stream.get_next(&private_data->stream, array);
-}
-
-int ErrorArrayStreamGetSchema(struct ArrowArrayStream* stream,
-                              struct ArrowSchema* schema) {
-  if (stream->release != ErrorArrayStreamRelease || !stream->private_data) return EINVAL;
-  auto* private_data = reinterpret_cast<struct ErrorArrayStream*>(stream->private_data);
-  return private_data->stream.get_schema(&private_data->stream, schema);
-}
-
 // Default stubs
 
 static const char kDefaultEntrypoint[] = "AdbcDriverInit";
 }  // namespace
+
+// Wrapper to expose ReleaseDriver from anonymous namespace
+AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error) {
+  return ReleaseDriverInternal(driver, error);
+}
+
+// Utility functions (shared across all source files)
+void AddSearchPathsToError(const SearchPaths& search_paths, const SearchPathType& type,
+                           std::string& error_message) {
+  if (!search_paths.empty()) {
+    error_message += "\nAlso searched these paths for";
+    if (type == SearchPathType::kManifest) {
+      error_message += " manifests:";
+    } else if (type == SearchPathType::kProfile) {
+      error_message += " profiles:";
+    }
+
+    for (const auto& [source, path] : search_paths) {
+      error_message += "\n\t";
+      switch (source) {
+        case SearchPathSource::kEnv:
+          if (type == SearchPathType::kManifest) {
+            error_message += "ADBC_DRIVER_PATH: ";
+          } else if (type == SearchPathType::kProfile) {
+            error_message += "ADBC_PROFILE_PATH: ";
+          }
+          break;
+        case SearchPathSource::kUser:
+          error_message += "user config dir: ";
+          break;
+        case SearchPathSource::kRegistry:
+          error_message += "Registry: ";
+          break;
+        case SearchPathSource::kSystem:
+          error_message += "system config dir: ";
+          break;
+        case SearchPathSource::kAdditional:
+          error_message += "additional search path: ";
+          break;
+        case SearchPathSource::kConda:
+          error_message += "Conda prefix: ";
+          break;
+        case SearchPathSource::kUnset:
+          error_message += "not set: ";
+          break;
+        case SearchPathSource::kDoesNotExist:
+          error_message += "does not exist: ";
+          break;
+        case SearchPathSource::kDisabledAtCompileTime:
+          error_message += "not enabled at build time: ";
+          break;
+        case SearchPathSource::kDisabledAtRunTime:
+          error_message += "not enabled at run time: ";
+          break;
+        case SearchPathSource::kOtherError:
+          // Don't add any prefix
+          break;
+      }
+      error_message += path.string();
+    }
+  }
+}
+
+// Error handling functions (shared across all source files)
+void ReleaseError(struct AdbcError* error) {
+  if (error) {
+    if (error->message) delete[] error->message;
+    error->message = nullptr;
+    error->release = nullptr;
+  }
+}
+
+void SetError(struct AdbcError* error, const std::string& message) {
+  static const std::string kPrefix = "[Driver Manager] ";
+
+  if (!error) return;
+  if (error->release) error->release(error);
+
+  // Prepend a string to identify driver manager errors
+  error->message = new char[kPrefix.size() + message.size() + 1];
+  kPrefix.copy(error->message, kPrefix.size());
+  message.copy(error->message + kPrefix.size(), message.size());
+  error->message[kPrefix.size() + message.size()] = '\0';
+  error->release = ReleaseError;
+}
+
+void AppendError(struct AdbcError* error, const std::string& message) {
+  if (!error) return;
+  if (!error->release || !error->message) {
+    SetError(error, message);
+    return;
+  }
+
+  size_t original_length = std::strlen(error->message);
+  size_t combined_length = original_length + 1 + message.size() + 1;
+  char* new_message = new char[combined_length];
+  std::ignore = std::snprintf(new_message, combined_length, "%s\n%s", error->message,
+                              message.c_str());
+
+  error->release(error);
+  error->message = new_message;
+  error->release = ReleaseError;
+}
+
+// Copies src_error into error and releases src_error
+void SetError(struct AdbcError* error, struct AdbcError* src_error) {
+  if (!error) return;
+  if (error->release) error->release(error);
+
+  if (src_error->message) {
+    size_t message_size = strlen(src_error->message);
+    error->message = new char[message_size + 1];  // +1 to include null
+    std::memcpy(error->message, src_error->message, message_size);
+    error->message[message_size] = '\0';
+  } else {
+    error->message = nullptr;
+  }
+
+  error->release = ReleaseError;
+  if (src_error->release) {
+    src_error->release(src_error);
+  }
+}
 
 // Other helpers (intentionally not in an anonymous namespace so they can be tested)
 ADBC_EXPORT std::filesystem::path InternalAdbcUserConfigDir() {
@@ -1340,28 +1217,6 @@ int AdbcErrorGetDetailCount(const struct AdbcError* error) {
   return 0;
 }
 
-struct AdbcErrorDetail AdbcErrorGetDetail(const struct AdbcError* error, int index) {
-  if (error->vendor_code == ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA && error->private_data &&
-      error->private_driver && error->private_driver->ErrorGetDetail) {
-    return error->private_driver->ErrorGetDetail(error, index);
-  }
-  return {nullptr, nullptr, 0};
-}
-
-const struct AdbcError* AdbcErrorFromArrayStream(struct ArrowArrayStream* stream,
-                                                 AdbcStatusCode* status) {
-  if (!stream->private_data || stream->release != ErrorArrayStreamRelease) {
-    return nullptr;
-  }
-  auto* private_data = reinterpret_cast<struct ErrorArrayStream*>(stream->private_data);
-  auto* error =
-      private_data->private_driver->ErrorFromArrayStream(&private_data->stream, status);
-  if (error) {
-    const_cast<struct AdbcError*>(error)->private_driver = private_data->private_driver;
-  }
-  return error;
-}
-
 #define INIT_ERROR(ERROR, SOURCE)                                    \
   if ((ERROR) != nullptr &&                                          \
       (ERROR)->vendor_code == ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA) { \
@@ -1445,32 +1300,7 @@ AdbcStatusCode InternalInitializeProfile(TempDatabase* args,
   return ADBC_STATUS_OK;
 }
 
-const char* AdbcStatusCodeMessage(AdbcStatusCode code) {
-#define CASE(CONSTANT)         \
-  case ADBC_STATUS_##CONSTANT: \
-    return #CONSTANT;
-
-  switch (code) {
-    CASE(OK);
-    CASE(UNKNOWN);
-    CASE(NOT_IMPLEMENTED);
-    CASE(NOT_FOUND);
-    CASE(ALREADY_EXISTS);
-    CASE(INVALID_ARGUMENT);
-    CASE(INVALID_STATE);
-    CASE(INVALID_DATA);
-    CASE(INTEGRITY);
-    CASE(INTERNAL);
-    CASE(IO);
-    CASE(CANCELLED);
-    CASE(TIMEOUT);
-    CASE(UNAUTHENTICATED);
-    CASE(UNAUTHORIZED);
-    default:
-      return "(invalid code)";
-  }
-#undef CASE
-}
+// AdbcStatusCodeMessage moved to adbc_driver_manager_api.cc (API implementation)
 
 AdbcStatusCode AdbcFindLoadDriver(const char* driver_name, const char* entrypoint,
                                   const int version, const AdbcLoadFlags load_options,

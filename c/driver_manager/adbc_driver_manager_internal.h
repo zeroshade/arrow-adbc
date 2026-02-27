@@ -129,7 +129,6 @@ std::optional<ParseDriverUriResult> InternalAdbcParseDriverUri(std::string_view 
 
 // Search paths
 SearchPaths GetSearchPaths(const AdbcLoadFlags levels);
-SearchPaths GetProfileSearchPaths(const char* additional_search_path_list);
 
 // Driver loading
 AdbcStatusCode LoadDriverManifest(const std::filesystem::path& driver_manifest,
@@ -182,6 +181,7 @@ AdbcStatusCode AdbcFindLoadDriver(const char* driver_name, const char* entrypoin
                                   const int version, const AdbcLoadFlags load_options,
                                   const char* additional_search_path_list,
                                   void* raw_driver, struct AdbcError* error);
+// ReleaseDriver is implemented in adbc_driver_manager.cc but used by API implementations
 AdbcStatusCode ReleaseDriver(struct AdbcDriver* driver, struct AdbcError* error);
 
 #endif  // ADBC_DRIVER_MANAGER_INTERNAL_H

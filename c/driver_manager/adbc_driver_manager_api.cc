@@ -104,6 +104,32 @@ static void ErrorArrayStreamInit(struct ArrowArrayStream* out,
 }
 
 // =============================================================================
+// ADBC Error API implementations
+// =============================================================================
+
+struct AdbcErrorDetail AdbcErrorGetDetail(const struct AdbcError* error, int index) {
+  if (error->vendor_code == ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA && error->private_data &&
+      error->private_driver && error->private_driver->ErrorGetDetail) {
+    return error->private_driver->ErrorGetDetail(error, index);
+  }
+  return {nullptr, nullptr, 0};
+}
+
+const struct AdbcError* AdbcErrorFromArrayStream(struct ArrowArrayStream* stream,
+                                                 AdbcStatusCode* status) {
+  if (!stream->private_data || stream->release != ErrorArrayStreamRelease) {
+    return nullptr;
+  }
+  auto* private_data = reinterpret_cast<struct ErrorArrayStream*>(stream->private_data);
+  auto* error =
+      private_data->private_driver->ErrorFromArrayStream(&private_data->stream, status);
+  if (error) {
+    const_cast<struct AdbcError*>(error)->private_driver = private_data->private_driver;
+  }
+  return error;
+}
+
+// =============================================================================
 // Default stub implementations for driver functions
 // =============================================================================
 

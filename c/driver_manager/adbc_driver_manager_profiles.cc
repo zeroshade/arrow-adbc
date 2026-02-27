@@ -23,6 +23,7 @@
 #include <toml++/toml.hpp>
 #include "arrow-adbc/adbc.h"
 #include "arrow-adbc/adbc_driver_manager.h"
+#include "adbc_driver_manager_internal.h"
 
 #include <filesystem>
 #include <regex>
@@ -39,44 +40,6 @@ ADBC_EXPORT
 std::filesystem::path InternalAdbcUserConfigDir();
 
 namespace {
-
-/// \brief Where a search path came from (for error reporting)
-enum class SearchPathSource {
-  kEnv,
-  kUser,
-  kRegistry,
-  kSystem,
-  kAdditional,
-  kConda,
-  kUnset,
-  kDoesNotExist,
-  kDisabledAtCompileTime,
-  kDisabledAtRunTime,
-  kOtherError,
-};
-
-using SearchPaths = std::vector<std::pair<SearchPathSource, std::filesystem::path>>;
-
-// Error handling
-
-void SetError(struct AdbcError* error, const std::string& message) {
-  static const std::string kPrefix = "[Driver Manager] ";
-
-  if (!error) return;
-  if (error->release) error->release(error);
-
-  // Prepend a string to identify driver manager errors
-  error->message = new char[kPrefix.size() + message.size() + 1];
-  kPrefix.copy(error->message, kPrefix.size());
-  message.copy(error->message + kPrefix.size(), message.size());
-  error->message[kPrefix.size() + message.size()] = '\0';
-
-  error->release = [](struct AdbcError* error) {
-    if (error->message) delete[] error->message;
-    error->message = nullptr;
-    error->release = nullptr;
-  };
-}
 
 #ifdef _WIN32
 using char_type = wchar_t;
@@ -107,14 +70,21 @@ using char_type = char;
 using string_type = std::string;
 #endif  // _WIN32
 
+#if 0  // Unused - kept for potential future use
 #ifdef _WIN32
 static const wchar_t* kAdbcProfilePath = L"ADBC_PROFILE_PATH";
 #else
 static const char* kAdbcProfilePath = "ADBC_PROFILE_PATH";
 #endif  // _WIN32
+#endif
 
-AdbcStatusCode ProcessProfileValue(std::string_view value, std::string& out,
-                                   struct AdbcError* error) {
+}  // namespace (reopen after moving types outside)
+
+// Re-enter anonymous namespace for helper functions
+namespace {
+
+static AdbcStatusCode ProcessProfileValueInternal(std::string_view value, std::string& out,
+                                                  struct AdbcError* error) {
   if (value.empty()) {
     SetError(error, "Profile value is null");
     return ADBC_STATUS_INVALID_ARGUMENT;
@@ -188,6 +158,7 @@ AdbcStatusCode ProcessProfileValue(std::string_view value, std::string& out,
   return ADBC_STATUS_OK;
 }
 
+#if 0  // Unused - kept for potential future use
 SearchPaths GetEnvPaths(const char_type* env_var) {
 #ifdef _WIN32
   DWORD required_size = GetEnvironmentVariableW(env_var, NULL, 0);
@@ -214,7 +185,11 @@ SearchPaths GetEnvPaths(const char_type* env_var) {
   }
   return paths;
 }
+#endif
 
+}  // namespace (closing early to move types outside)
+
+// FilesystemProfile needs external linkage for use in internal header
 struct FilesystemProfile {
   std::filesystem::path path;
   std::string driver;
@@ -371,6 +346,12 @@ struct ProfileVisitor {
   }
 };
 
+// Public implementations (non-static for use across translation units)
+AdbcStatusCode ProcessProfileValue(std::string_view value, std::string& out,
+                                   struct AdbcError* error) {
+  return ProcessProfileValueInternal(value, out, error);
+}
+
 AdbcStatusCode LoadProfileFile(const std::filesystem::path& profile_path,
                                FilesystemProfile& profile, struct AdbcError* error) {
   toml::table config;
@@ -425,7 +406,12 @@ AdbcStatusCode LoadProfileFile(const std::filesystem::path& profile_path,
   return ADBC_STATUS_OK;
 }
 
-SearchPaths GetProfileSearchPaths(const char* additional_search_path_list) {
+// Reopen anonymous namespace for unused helper (commented out to avoid unused warning)
+namespace {
+
+// Unused - kept for potential future use
+#if 0
+static SearchPaths GetProfileSearchPaths(const char* additional_search_path_list) {
   SearchPaths search_paths;
   {
     std::vector<std::filesystem::path> additional_paths;
@@ -471,5 +457,6 @@ SearchPaths GetProfileSearchPaths(const char* additional_search_path_list) {
   search_paths.emplace_back(SearchPathSource::kUser, user_dir);
   return search_paths;
 }
+#endif
 
 }  // namespace
